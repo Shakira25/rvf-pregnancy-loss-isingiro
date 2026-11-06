@@ -5,6 +5,7 @@ A three-model mathematical framework that estimates how many pregnancy losses ea
 **Author:** Shakira Babirye
 **Supervisors:** Prof. Betty Kivumbi and Abel Wilson Walekhwa
 **Affiliations:** Uganda National Institute of Public Health (UNIPH) fellowship; Infectious Diseases Research Collaboration (IDRC)
+
 **Status:** manuscript in preparation. Code and outputs are version 2.3 (07 October 2026).
 
 ## Research questions
