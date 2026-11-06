@@ -1,0 +1,186 @@
+{
+ "tier": 1,
+ "error": null,
+ "params": {
+  "dates": [
+   {
+    "endDate": "03-31-2026",
+    "startDate": "01-01-1995"
+   }
+  ],
+  "layers": [
+   {
+    "layer": "_250m_16_days_NDVI",
+    "product": "MOD13Q1.061"
+   },
+   {
+    "layer": "_250m_16_days_EVI",
+    "product": "MOD13Q1.061"
+   },
+   {
+    "layer": "_250m_16_days_pixel_reliability",
+    "product": "MOD13Q1.061"
+   }
+  ],
+  "output": {
+   "format": {
+    "type": "csv"
+   },
+   "projection": "geographic"
+  },
+  "coordinates": [
+   {
+    "id": "ISI_001",
+    "category": "Kakoba Division",
+    "latitude": -0.6002,
+    "longitude": 30.6792
+   },
+   {
+    "id": "ISI_002",
+    "category": "Nyamitanga Division",
+    "latitude": -0.6258,
+    "longitude": 30.6573
+   },
+   {
+    "id": "ISI_003",
+    "category": "Mwizi",
+    "latitude": -0.7988,
+    "longitude": 30.5952
+   },
+   {
+    "id": "ISI_004",
+    "category": "Rushasha",
+    "latitude": -0.7326,
+    "longitude": 31.0754
+   },
+   {
+    "id": "ISI_005",
+    "category": "Mbaare",
+    "latitude": -0.9321,
+    "longitude": 31.0544
+   },
+   {
+    "id": "ISI_006",
+    "category": "Kashumba",
+    "latitude": -0.8866,
+    "longitude": 30.938
+   },
+   {
+    "id": "ISI_007",
+    "category": "Ngarama",
+    "latitude": -0.8989,
+    "longitude": 30.8443
+   },
+   {
+    "id": "ISI_008",
+    "category": "Kabingo",
+    "latitude": -0.7566,
+    "longitude": 30.8047
+   },
+   {
+    "id": "ISI_009",
+    "category": "Masha",
+    "latitude": -0.665,
+    "longitude": 30.7699
+   },
+   {
+    "id": "ISI_010",
+    "category": "Kaberebere Town Council",
+    "latitude": -0.6955,
+    "longitude": 30.6937
+   },
+   {
+    "id": "ISI_011",
+    "category": "Birere",
+    "latitude": -0.706,
+    "longitude": 30.671
+   },
+   {
+    "id": "ISI_012",
+    "category": "Nyamuyanja",
+    "latitude": -0.7854,
+    "longitude": 30.6837
+   },
+   {
+    "id": "ISI_013",
+    "category": "Nyakitunda",
+    "latitude": -0.8776,
+    "longitude": 30.7001
+   },
+   {
+    "id": "ISI_014",
+    "category": "Isingiro Town Council",
+    "latitude": -0.8048,
+    "longitude": 30.8178
+   },
+   {
+    "id": "ISI_015",
+    "category": "Kikagate",
+    "latitude": -0.9879,
+    "longitude": 30.6827
+   },
+   {
+    "id": "ISI_016",
+    "category": "Kabuyanda",
+    "latitude": -0.9113,
+    "longitude": 30.615
+   },
+   {
+    "id": "ISI_017",
+    "category": "Kabuyanda Town Council",
+    "latitude": -0.9577,
+    "longitude": 30.6138
+   },
+   {
+    "id": "ISI_018",
+    "category": "Ruborogota",
+    "latitude": -1.0132,
+    "longitude": 30.5524
+   },
+   {
+    "id": "ISI_019",
+    "category": "Rugaaga",
+    "latitude": -0.7976,
+    "longitude": 31.0312
+   },
+   {
+    "id": "ISI_020",
+    "category": "Endiinzi",
+    "latitude": -0.9014,
+    "longitude": 31.1814
+   },
+   {
+    "id": "ISI_021",
+    "category": "Endiinzi Town Council",
+    "latitude": -0.8755,
+    "longitude": 31.1486
+   },
+   {
+    "id": "ISI_022",
+    "category": "Kakamba",
+    "latitude": -0.9739,
+    "longitude": 30.8433
+   }
+  ]
+ },
+ "status": "processing",
+ "created": "2026-05-12T17:04:09.433317",
+ "task_id": "8e880203-8160-4f1b-bfb5-98fc2be305c2",
+ "updated": "2026-05-12T17:08:08.888051",
+ "user_id": "<redacted>",
+ "estimate": {
+  "request_size": 39336,
+  "request_tier": 0,
+  "request_memory": 1
+ },
+ "retry_at": null,
+ "has_swath": false,
+ "task_name": "Isingiro_RVF_NDVI_SubCounty_v3",
+ "task_type": "point",
+ "api_version": "v1",
+ "svc_version": "3.117",
+ "web_version": null,
+ "has_nsidc_daac": false,
+ "expires_on": "2026-06-11T17:08:08.888051",
+ "attempts": 1
+}

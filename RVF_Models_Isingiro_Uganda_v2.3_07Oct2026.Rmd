@@ -1,0 +1,1319 @@
+---
+title: "Estimating the Hidden Burden: Modelling Rift Valley Fever-Attributable Excess Pregnancy Loss Among Women in Isingiro District, Uganda"
+subtitle: "Three-model framework, version 2.3 (07 October 2026)"
+author: "Shakira Babirye | Supervisors: Prof. Betty Kivumbi and Abel Wilson Walekhwa | UNIPH, IDRC"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: united
+    number_sections: true
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  cache      = TRUE,
+  autodep    = TRUE,
+  fig.width  = 7.5,
+  fig.height = 4.5,
+  fig.align  = "center",
+  dpi        = 150
+)
+```
+
+# About this project
+
+**Aim.** To estimate the burden of pregnancy loss attributable to Rift Valley fever (RVF) among women of reproductive age in Isingiro District, Uganda, an endemic setting where these losses are not detected by routine surveillance, and to assess how much of this burden alternative surveillance strategies could detect.
+
+**Research questions**
+
+1. How many pregnancy losses per year in Isingiro are attributable to RVF virus (RVFV) infection during pregnancy?
+2. How are these losses distributed through the year in relation to the vegetation (NDVI) driven seasonality of transmission?
+3. What proportion of these losses does current surveillance detect, and how much would alternative strategies detect?
+4. Which uncertain parameters most affect the estimate, and therefore which data should be collected next?
+
+**Approach.** Three linked models are run in sequence:
+
+| Model | What it does | Main output passed on |
+|---|---|---|
+| Environmental forcing | Converts satellite vegetation greenness (MODIS NDVI) for the 22 sub-counties into a monthly multiplier of infection risk | Seasonal multiplier λ_env(t) |
+| Model 1: transmission (SEIR₁R₂) | Simulates RVFV infection in the whole district population, with the force of infection estimated from age-specific seroprevalence | Force of infection λ(t) |
+| Model 2: pregnancy and excess loss (SEIR₁R₂ + L) | Applies λ(t) to pregnant women and counts losses above the background miscarriage rate | Annual RVF-attributable excess losses |
+| Model 3: detection cascade | Estimates the share of these losses detected under five surveillance scenarios | Detected and missed losses |
+| Sensitivity analysis | Morris screening and Sobol variance decomposition | Parameters that drive uncertainty |
+
+No new primary data were collected; all inputs come from published studies, national surveys and satellite data (Section 2).
+
+## Where each research question is answered
+
+| Research question | Section | Code chunks (in order) | Outputs to read |
+|---|---|---|---|
+| 1. How many pregnancy losses per year are attributable to RVF? | 4 and 5 | `lambda_fit`, `m1_params`, `m1_odes`, `m1_run`, `m1_calibration`, `m2_stage1`, `m2_params`, `m2_odes`, `m2_run`, `m2_plot` | Force of infection table, Stage 1 table, Figure 3, results summary |
+| 2. How are the losses distributed through the year? | 3 and 5.4 | `env_data`, `m2_monthly` | Figure 1, Figure 4, monthly table |
+| 3. What share is detected now and under alternative strategies? | 6 | `m3_detection`, `m3_plot` | Scenario table, Figure 5 |
+| 4. Which parameters drive the uncertainty? | 7 | `morris_sa`, `morris_plot`, `sobol_sa`, `sobol_plot` | Morris table, Figure 6, Sobol table, Figure 7 |
+
+Chunk names appear in the code (for example ```` ```{r m2_run} ````) and in the RStudio chunk menu at the bottom of the editor, so each answer can be traced to the code that produces it. Sections that answer a research question start with a box naming it.
+
+## How to run this file
+
+1. All inputs are in the `data/` folder next to this file (NDVI outputs, sub-county points, boundary shapefiles). The NDVI data were produced by `ndvi_climate_code/download_MODIS_NDVI_rainfall_v2.1_FDA_17May2026.R`; that script does not need to be re-run.
+2. Open this file in RStudio and click **Knit**. A full run takes about 15 minutes; later runs reuse cached results unless a parameter changes.
+3. Outputs are written to `outputs_v2.3_07Oct2026/`: figures as 300 dpi PNG (`figures_png/`) and 600 dpi TIFF for journal submission (`figures_tiff_600dpi/`), and all tables in a Word file.
+4. The code finds its inputs relative to this file, so keep this `.Rmd` file and the `data/` folder together; the folder can be anywhere on any computer. R 4.4 or later is recommended; missing packages are installed automatically on the first run (internet needed).
+
+```{r packages, cache=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+required_pkgs <- c(
+  "deSolve",       # ODE solver for Models 1 and 2
+  "tidyverse",     # data handling and ggplot2
+  "lhs",           # Latin hypercube samples for Sobol
+  "sensitivity",   # Morris and Sobol sensitivity analysis
+  "patchwork",     # multi-panel figures
+  "scales",
+  "knitr", "kableExtra",
+  "DiagrammeR", "DiagrammeRsvg", "rsvg", "magick",  # model diagrams
+  "flextable", "officer",                           # Word export of tables
+  "digest",                                         # cache keys
+  "ragg",                                           # high-quality PNG/TIFF devices
+  "sf", "ggrepel", "ggspatial"                      # supplementary map
+)
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  library(pkg, character.only = TRUE)
+}
+# fda is called with fda:: only; attaching it would load MASS, which masks dplyr::select
+if (!requireNamespace("fda", quietly = TRUE)) install.packages("fda")
+```
+
+```{r setup_outputs, include=FALSE, cache=FALSE}
+# The project folder is the folder that contains this .Rmd file (knitr runs from there),
+# so the code works on any computer as long as data/ sits next to this file.
+PROJECT_DIR  <- normalizePath(".", winslash = "/")
+DATA_DIR     <- file.path(PROJECT_DIR, "data")
+NDVI_IN_DIR  <- file.path(DATA_DIR, "ndvi_fda_outputs")
+OUT_DIR      <- file.path(PROJECT_DIR, "outputs_v2.3_07Oct2026")
+FIG_PNG_DIR  <- file.path(OUT_DIR, "figures_png")
+FIG_TIFF_DIR <- file.path(OUT_DIR, "figures_tiff_600dpi")
+for (d in c(OUT_DIR, FIG_PNG_DIR, FIG_TIFF_DIR))
+  if (!dir.exists(d)) dir.create(d, recursive = TRUE)
+
+# Journal figure sizes (PLOS: width up to 7.5 in, height up to 8.75 in; TIFF 300 to 600 dpi)
+FIG_W_FULL <- 7.5
+FIG_W_HALF <- 3.5
+
+save_gg <- function(p, filename, width = FIG_W_FULL, height = 4.5) {
+  ggsave(file.path(FIG_PNG_DIR, filename), plot = p, width = width, height = height,
+         units = "in", dpi = 300, bg = "white", device = ragg::agg_png)
+  ggsave(file.path(FIG_TIFF_DIR, sub("\\.png$", ".tiff", filename)), plot = p,
+         width = width, height = height, units = "in", dpi = 600, bg = "white",
+         device = ragg::agg_tiff, compression = "lzw")
+  invisible(p)
+}
+
+save_grViz <- function(grViz_obj, filename, width_in = FIG_W_FULL) {
+  tmp_svg <- tempfile(fileext = ".svg")
+  writeLines(DiagrammeRsvg::export_svg(grViz_obj), tmp_svg)
+  rsvg::rsvg_png(tmp_svg, file = file.path(FIG_PNG_DIR, filename), width = round(width_in * 300))
+  img <- magick::image_read(rsvg::rsvg_png(tmp_svg, width = round(width_in * 600))) |>
+    magick::image_background("white") |> magick::image_flatten()
+  magick::image_write(img, path = file.path(FIG_TIFF_DIR, sub("\\.png$", ".tiff", filename)),
+                      format = "tiff", density = "600x600", compression = "LZW")
+  invisible(filename)
+}
+
+# Okabe-Ito colour-blind safe palette
+COL <- c(blue = "#0072B2", orange = "#E69F00", green = "#009E73", vermillion = "#D55E00",
+         purple = "#CC79A7", sky = "#56B4E9", yellow = "#F0E442", black = "#000000")
+CLUSTER_COL <- c("Cluster 1" = "#0072B2", "Cluster 2" = "#E69F00", "Cluster 3" = "#009E73")
+
+theme_pub <- function(base_size = 9) {
+  theme_classic(base_size = base_size, base_family = "sans") %+replace%
+    theme(
+      plot.title         = element_text(face = "bold", size = base_size, hjust = 0, margin = margin(b = 3)),
+      plot.tag           = element_text(face = "bold", size = base_size + 2),
+      axis.title         = element_text(size = base_size),
+      axis.text          = element_text(size = base_size - 1, colour = "black"),
+      axis.line          = element_line(linewidth = 0.3),
+      axis.ticks         = element_line(linewidth = 0.3),
+      legend.title       = element_text(size = base_size - 0.5),
+      legend.text        = element_text(size = base_size - 1),
+      legend.key.size    = unit(0.8, "lines"),
+      legend.background  = element_blank(),
+      panel.grid.major.y = element_line(colour = "grey92", linewidth = 0.3),
+      strip.background   = element_blank(),
+      strip.text         = element_text(face = "bold", size = base_size),
+      plot.margin        = margin(4, 8, 4, 4)
+    )
+}
+
+kbl_style <- function(k) kableExtra::kable_styling(k, bootstrap_options = c("striped", "hover", "condensed"))
+
+PARAM_LABELS <- c(
+  RR = "Miscarriage RR, acute phase", RR_igm = "Miscarriage RR, IgM phase",
+  lambda_mult = "Force of infection (multiplier)", mu_bgd_pct = "Background miscarriage risk",
+  sigma_d = "Incubation period", gamma_d = "Viraemic period", omega_d = "IgM duration",
+  pi_mult = "Proportion pregnant (multiplier)", GFR_mult = "Fertility rate (multiplier)",
+  p_present = "Presentation probability", p_tested = "Testing probability",
+  igm_start = "IgM window start")
+```
+
+# Parameters and data sources {#parameters}
+
+The table lists every input, the part of the model that uses it, why it is needed and where the value comes from. Parameters marked *assumption* have no direct literature value; their influence is tested in the sensitivity analysis (Section 7).
+
+```{r parameter_table, echo=FALSE, cache=FALSE}
+param_table <- tibble::tribble(
+  ~Parameter, ~Value, ~`Used in`, ~`Why it is needed`, ~Source, ~Link,
+  "District population (N)", "635,077", "Model 1",
+    "Size of the population exposed to RVFV; converts rates into numbers of people",
+    "UBOS 2024 census, Vol. 1, p. 55", "https://www.ubos.org/wp-content/uploads/2024/12/National-Population-and-Housing-Census-2024-Final-Report-Volume-1-Main.pdf",
+  "Proportion of the population female", "0.534", "Model 2 (Stage 1)",
+    "Number of women in the district", "UBOS 2024 census, p. 55 (339,276 / 635,077)", "https://www.ubos.org/wp-content/uploads/2024/12/National-Population-and-Housing-Census-2024-Final-Report-Volume-1-Main.pdf",
+  "Women aged 15 to 49 as share of all women", "0.499", "Model 2 (Stage 1)",
+    "Number of women of reproductive age (WRA)", "UBOS 2024 census, Table 2.3A (national)", "https://www.ubos.org/wp-content/uploads/2024/12/National-Population-and-Housing-Census-2024-Final-Report-Volume-1-Main.pdf",
+  "Life expectancy (1/μH)", "68.2 years", "Model 1",
+    "Births and deaths that keep the population constant and replace immune people over time",
+    "UBOS 2024 census, p. 111", "https://www.ubos.org/wp-content/uploads/2024/12/National-Population-and-Housing-Census-2024-Final-Report-Volume-1-Main.pdf",
+  "IgG seroprevalence, Isingiro", "13.84% (53/383)", "Model 1",
+    "Immune fraction at the start of the simulation; level used to estimate λ",
+    "Nyakarahuka et al. 2026, Table 1", "https://doi.org/10.3390/pathogens15020224",
+  "Seroprevalence by age (4 groups)", "0% to 18.5%, n = 766", "Model 1",
+    "Shape of the rise in immunity with age, used to estimate λ", "Nyakarahuka et al. 2026, Table 1", "https://doi.org/10.3390/pathogens15020224",
+  "Force of infection (λ)", "0.0037 per year", "Models 1 and 2",
+    "Yearly probability that a susceptible person is infected", "Estimated in this study (Section 4.1)", "",
+  "Seasonal multiplier (λenv)", "0.2 to 1.0 by month", "Models 1 and 2",
+    "Month-to-month change in infection risk driven by vegetation and flooding",
+    "MODIS NDVI MOD13Q1.061 (2000 to 2026); 0.2 dry-season floor is an assumption", "https://doi.org/10.5067/MODIS/MOD13Q1.061",
+  "Incubation period (1/σ)", "4 days (2 to 6)", "Models 1 and 2",
+    "Time from infection to becoming infectious", "WHO RVF fact sheet", "https://www.who.int/news-room/fact-sheets/detail/rift-valley-fever",
+  "Viraemic period (1/γ)", "5.5 days (4 to 7)", "Models 1 and 2",
+    "Duration of acute infection, when the acute-phase miscarriage risk applies", "WHO RVF fact sheet", "https://www.who.int/news-room/fact-sheets/detail/rift-valley-fever",
+  "IgM-positive period (1/ω)", "41 days (41 to 60)", "Models 1 and 2",
+    "Duration of the IgM phase, when the delayed miscarriage risk applies",
+    "Shoemaker et al. 2019; Haneche et al. 2016", "https://doi.org/10.4269/ajtmh.18-0732",
+  "Proportion of WRA pregnant (π)", "9.3%", "Model 2",
+    "Number of pregnant women at risk at any time", "UDHS 2022, Table 5.2 (Ankole)", "https://www.ubos.org/wp-content/uploads/publications/UDHS-2022-Report.pdf",
+  "General fertility rate", "194 per 1,000 women", "Model 2 (cross-check)",
+    "Independent check on the number of pregnancies", "UDHS 2022, Table 5.1 (rural)", "https://www.ubos.org/wp-content/uploads/publications/UDHS-2022-Report.pdf",
+  "Fetal loss rate", "15.3%", "Model 2 (cross-check)",
+    "Converts births into pregnancies for the fertility cross-check", "Quenby et al. 2021", "https://doi.org/10.1016/S0140-6736(21)00682-6",
+  "Gestation length (1/κ)", "270 days", "Model 2",
+    "How long a woman remains in the pregnant population", "Standard biology (assumption)", "",
+  "Background miscarriage risk", "12% per pregnancy", "Model 2",
+    "Baseline loss risk; RVF excess risk is added on top of it", "Baudin et al. 2016 (12/102)", "https://doi.org/10.1016/S2214-109X(16)30176-0",
+  "Miscarriage risk ratio, acute phase", "4.55 (2.42 to 8.58)", "Model 2",
+    "Excess miscarriage risk during viraemia", "Baudin et al. 2016 (15/28 vs 12/102)", "https://doi.org/10.1016/S2214-109X(16)30176-0",
+  "Miscarriage risk ratio, IgM phase", "2.0 (1.0 to 3.5)", "Model 2",
+    "Excess miscarriage risk after viraemia clears (placental damage)",
+    "Assumption; biological plausibility from Gwon et al. 2021 (in vitro)", "https://doi.org/10.3390/v13112265",
+  "PCR detection window", "Days 0 to 7 after onset", "Model 3",
+    "Period when PCR can confirm infection", "WHO RVF fact sheet (assumption)", "https://www.who.int/news-room/fact-sheets/detail/rift-valley-fever",
+  "IgM detection window", "Days 6 to 60 after onset", "Model 3",
+    "Period when IgM serology can confirm recent infection",
+    "Paweska et al. 2005; Haneche et al. 2016; Pepin et al. 2010", "https://doi.org/10.1016/j.jviromet.2004.11.020",
+  "Delay from onset to presentation", "Log-normal, median 7 d, SD 14 d", "Model 3",
+    "When women reach a health facility relative to the test windows", "Assumption", "",
+  "Presentation, testing and recording probabilities", "By scenario (Section 6)", "Model 3",
+    "Steps a loss must pass to be detected", "Assumptions", "",
+  "Expected yearly cases, SW Uganda", "314 to 2,111 per 1,369 km²", "Model 1 check",
+    "External check of the number of new infections", "Bakamutumaho et al. (J Infect Dis)", "https://doi.org/10.1093/infdis/jiaf417",
+  "Isingiro land area", "2,610 km²", "Model 1 check",
+    "Scales the external range to the district", "Isingiro District Development Plan II, p. 29", "https://npa.go.ug/wp-content/uploads/2023/03/ISINGIRO-District-5-Year-LGDP-Final.pdf"
+)
+how_obtained <- c(
+  "District population (N)" = "Census count: 295,801 males + 339,276 females = 635,077",
+  "Proportion of the population female" = "339,276 females / 635,077 people = 0.534",
+  "Women aged 15 to 49 as share of all women" = "Sum of the seven 5-year groups of women aged 15 to 49 (11,764,068) / all women (23,591,128) = 0.499. National value: no district age-by-sex table is published",
+  "Life expectancy (1/μH)" = "Reported directly. Daily mortality rate μH = 1 / (68.2 × 365) = 4.0 × 10^-5 per day",
+  "IgG seroprevalence, Isingiro" = "53 IgG positive / 383 tested = 13.84%",
+  "Seroprevalence by age (4 groups)" = "Positive / tested in each age group: 0/64 (0 to 17 years), 13/180 (18 to 30), 29/273 (31 to 49), 46/249 (50 and over)",
+  "Force of infection (λ)" = "Catalytic model P(a) = 1 - exp(-λa) fitted by maximum likelihood to the four age groups; λ then scaled so the survey age mix reproduces Isingiro's 13.84%. Per day: λ / 365 = 1.02 × 10^-5 (Section 4.1)",
+  "Seasonal multiplier (λenv)" = "For each cluster: λenv = 0.2 + 0.8 × (NDVI - NDVImin) / (NDVImax - NDVImin) using monthly mean NDVI; district value = mean of the 3 clusters weighted by number of sub-counties",
+  "Incubation period (1/σ)" = "WHO range 2 to 6 days; midpoint (2 + 6) / 2 = 4 days, so σ = 1/4 per day. The full range is used in the sensitivity analysis",
+  "Viraemic period (1/γ)" = "WHO: symptoms last 4 to 7 days, after which virus clears from the blood; midpoint (4 + 7) / 2 = 5.5 days, so γ = 1/5.5 per day",
+  "IgM-positive period (1/ω)" = "IgM still high at day 41 after onset in a Ugandan case (Shoemaker), so ω = 1/41 per day. Range up to 60 days: IgM detected up to 2 months after onset (Haneche)",
+  "Proportion of WRA pregnant (π)" = "Reported directly: 9.3% of women aged 15 to 49 in Ankole were currently pregnant",
+  "General fertility rate" = "Reported directly (rural areas, births per 1,000 women aged 15 to 44)",
+  "Fetal loss rate" = "Reported directly: pooled risk of miscarriage among recognised pregnancies",
+  "Gestation length (1/κ)" = "About 38.5 weeks from conception; delivery rate κ = 1/270 per day",
+  "Background miscarriage risk" = "12 miscarriages / 102 RVFV-negative women = 11.8%, rounded to 12%. Per day: 0.12 / 270 = 4.4 × 10^-4",
+  "Miscarriage risk ratio, acute phase" = "(15/28) / (12/102) = 0.536 / 0.118 = 4.55. 95% CI = exp(ln 4.55 ± 1.96 × SE), SE = √(1/15 - 1/28 + 1/12 - 1/102) = 0.323, giving 2.42 to 8.58",
+  "Miscarriage risk ratio, IgM phase" = "Assumed: between no extra risk (1.0) and below the acute-phase value",
+  "PCR detection window" = "Viraemia lasts up to about 7 days after symptom onset (WHO)",
+  "IgM detection window" = "Start: IgM first detected 6 days after onset (Paweska). End: detectable up to about 2 months after onset (Haneche), rarely beyond day 50 (Pepin)",
+  "Delay from onset to presentation" = "Log-normal with median 7 and SD 14 days: meanlog = ln 7, sdlog = √(ln(1 + (14/7)^2))",
+  "Presentation, testing and recording probabilities" = "Set for each scenario (Section 6)",
+  "Expected yearly cases, SW Uganda" = "Reported directly; scaled to Isingiro: range × 2,610 / 1,369",
+  "Isingiro land area" = "Reported in the plan (about 2,610 sq km); its sub-county areas sum to 2,609.6 sq km"
+)
+param_table <- param_table |>
+  dplyr::mutate(`How it was obtained` = unname(how_obtained[Parameter])) |>
+  dplyr::relocate(`How it was obtained`, .after = Value)
+
+param_table |>
+  dplyr::mutate(Source = ifelse(Link == "", Source,
+                                sprintf('<a href="%s" target="_blank">%s</a>', Link, Source))) |>
+  dplyr::select(-Link) |>
+  knitr::kable(caption = "Model inputs, their role and their sources (click a source to open it)", escape = FALSE) |>
+  kbl_style()
+```
+
+## Key formulas
+
+How the main derived quantities are calculated (symbols as in the parameter table):
+
+- Women of reproductive age: $N_{WRA} = N \times p_{female} \times p_{15\text{ to }49}$
+- Pregnant women at any time: $N_{preg} = N_{WRA} \times \pi$
+- New pregnancies per day, chosen so the pregnant population stays constant: $\Pi = N_{preg}\,(\kappa + \mu_{bgd})$
+- Catalytic model for the force of infection: $P(a) = 1 - e^{-\lambda a}$, the probability of being IgG positive at age $a$
+- Seasonal force of infection: $\lambda(t) = \lambda \times \lambda_{env}(t)$
+- Seasonal multiplier: $\lambda_{env} = 0.2 + 0.8\,\dfrac{NDVI - NDVI_{min}}{NDVI_{max} - NDVI_{min}}$
+- Rates from durations: $\sigma = 1/4$, $\gamma = 1/5.5$, $\omega = 1/41$, $\kappa = 1/270$ per day; $\mu_H = 1/(68.2 \times 365)$ per day
+- Extra probability of loss from RVF: $P_{excess} = (RR - 1)\,p_{bgd}$, converted to a daily hazard competing with the other exits: $h = P_{excess}\,\dfrac{\gamma + \mu_{bgd} + \kappa}{1 - P_{excess}}$ (with $\omega$ in place of $\gamma$ for the IgM phase)
+- Probability a loss is detected: $P_{detect} = P_{present} \times P_{detectable} \times P_{tested} \times P_{recorded}$, with $P_{detectable} = F(60) - F(6)$ for IgM, where $F$ is the log-normal distribution of days from onset to presentation
+
+## Key assumptions
+
+| # | Assumption | Basis |
+|---|---|---|
+| A1 | RVFV circulates endemically in Isingiro | Seroprevalence rises with age, consistent with continuous exposure ([Nyakarahuka et al. 2026](https://doi.org/10.3390/pathogens15020224)) |
+| A2 | No human-to-human transmission; λ is a spillover hazard from the animal and mosquito cycle | Established RVF biology |
+| A3 | Infection gives lifelong immunity (no return from R₂ to S) | [Sabin and Blumberg 1947](https://pubmed.ncbi.nlm.nih.gov/20239431/) |
+| A4 | An RVF-attributable loss removes the pregnancy from the model (L is absorbing) | Women who conceive again are immune |
+| A5 | Births equal deaths, so the population size is constant | Standard for endemic models |
+| A6 | The proportion of women pregnant is stable | No large recent demographic shocks |
+| A7 | Same-month NDVI drives the seasonal multiplier, without an extra lag | NDVI follows rainfall of the current and two previous months ([Nicholson et al. 1990](https://doi.org/10.1007/BF00138369)); outbreaks follow heavy rain by 0 to 2 months ([Wang et al. 2024](https://doi.org/10.1016/j.scitotenv.2024.170302)) |
+| A8 | Delayed losses can occur in the IgM phase | RVFV infects placental trophoblast cells ([Gwon et al. 2021](https://doi.org/10.3390/v13112265)) |
+| A9 | Women referred by a VHT attend the facility | Simplifying assumption; gives an upper bound for Scenario 4 |
+| A10 | PCR on products of conception is not part of any scenario | Not standard care in Uganda; ethical and logistical constraints |
+
+# Environmental forcing: NDVI and seasonality {#env}
+
+> **Research question 2** (seasonality) starts here: chunk `env_data` builds the seasonal multiplier used throughout.
+
+**Why this step is needed.** RVF transmission rises after rains and flooding, when mosquitoes breed. The satellite vegetation index NDVI captures this, so it is used to make the risk of infection vary by month. Each sub-county's 12-month NDVI pattern was clustered with functional data analysis (FDA) into three phenology groups, and each group's NDVI curve was rescaled to a multiplier between 0.2 (driest month) and 1.0 (wettest). The district multiplier is the average of the three groups, weighted by their number of sub-counties.
+
+```{r env_data, cache=FALSE, fig.width=7.5, fig.height=3, fig.cap="Figure 1. Seasonal multiplier of the force of infection, Isingiro District (MODIS NDVI, 2000 to 2026)."}
+lambda_env_cluster <- read_csv(file.path(NDVI_IN_DIR, "lambda_env_fda_cluster.csv"), show_col_types = FALSE)
+subcounty_lookup   <- read_csv(file.path(NDVI_IN_DIR, "fda_cluster_assignments.csv"), show_col_types = FALSE)
+
+lambda_env_district <- lambda_env_cluster |>
+  left_join(count(subcounty_lookup, fda_cluster, name = "n_subcounties"), by = "fda_cluster") |>
+  group_by(month_n) |>
+  summarise(lambda_env = weighted.mean(lambda_env, w = n_subcounties), .groups = "drop") |>
+  arrange(month_n) |>
+  mutate(month_abbr = factor(month.abb[month_n], levels = month.abb))
+
+# Cyclic monthly lookup used inside the ODEs (t in days; 30.44 days per month)
+lambda_seasonal_fn <- approxfun(
+  x = c(0, lambda_env_district$month_n, 13),
+  y = c(lambda_env_district$lambda_env[12], lambda_env_district$lambda_env, lambda_env_district$lambda_env[1]),
+  method = "linear", rule = 2)
+t_to_month_n  <- function(t) (floor(t / 30.44) %% 12) + 1
+lambda_env_fn <- function(t) lambda_seasonal_fn(t_to_month_n(t))
+
+p_env <- ggplot(lambda_env_district, aes(month_n, lambda_env)) +
+  geom_area(fill = COL["green"], alpha = 0.15) +
+  geom_line(colour = COL["green"], linewidth = 0.8) +
+  geom_point(colour = COL["green"], size = 1.6) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb, expand = expansion(add = 0.3)) +
+  scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, 0.2), expand = expansion(mult = c(0, 0.02))) +
+  labs(x = NULL, y = expression("Seasonal multiplier ("*lambda[env]*")")) +
+  theme_pub()
+p_env
+save_gg(p_env, "fig1_seasonal_forcing.png", width = FIG_W_FULL, height = 3)
+```
+
+**What Figure 1 shows.** Infection risk has two peaks a year: `r month.abb[which.max(lambda_env_district$lambda_env)]` is the highest month (multiplier `r sprintf("%.2f", max(lambda_env_district$lambda_env))`) with a second peak in April and May, matching the short and long rains. July and August are the driest months (multiplier about `r sprintf("%.2f", min(lambda_env_district$lambda_env))`), when infection risk is about one fifth of the peak. This pattern is applied to the force of infection in Models 1 and 2.
+
+## Supplementary NDVI figures
+
+```{r figS1_map, echo=FALSE, cache=FALSE, fig.width=7.5, fig.height=4.6, fig.cap="Figure S1. Sub-county centroids used for NDVI extraction, coloured by FDA phenology cluster."}
+isingiro_poly <- sf::st_read(file.path(DATA_DIR, "shapefiles", "Admin 3 shape files uganda",
+                                       "geoBoundaries-UGA-ADM3.shp"), quiet = TRUE) |>
+  dplyr::filter(shapeName == "Isingiro")
+clusters_df <- subcounty_lookup |> dplyr::mutate(cluster = factor(sprintf("Cluster %d", fda_cluster)))
+clusters_sf <- sf::st_as_sf(clusters_df, coords = c("longitude", "latitude"), crs = 4326)
+
+p_map <- ggplot() +
+  geom_sf(data = isingiro_poly, fill = "grey96", colour = "grey35", linewidth = 0.4) +
+  geom_sf(data = clusters_sf, aes(colour = cluster, shape = cluster), size = 2.2) +
+  ggrepel::geom_text_repel(data = clusters_df, aes(longitude, latitude, label = subcounty),
+                           size = 2.2, colour = "grey15", min.segment.length = 0, segment.size = 0.2,
+                           segment.colour = "grey50", box.padding = 0.35, max.overlaps = Inf, seed = 2026) +
+  scale_colour_manual(values = CLUSTER_COL, name = NULL) +
+  scale_shape_manual(values = c(16, 17, 15), name = NULL) +
+  ggspatial::annotation_scale(location = "bl", width_hint = 0.25, text_cex = 0.6,
+                              line_width = 0.4, height = unit(0.15, "cm")) +
+  ggspatial::annotation_north_arrow(location = "tr", height = unit(0.8, "cm"), width = unit(0.6, "cm"),
+                                    style = ggspatial::north_arrow_minimal(text_size = 7)) +
+  coord_sf() + labs(x = NULL, y = NULL) + theme_pub() +
+  theme(legend.position = "bottom", panel.grid.major.y = element_blank(),
+        axis.line = element_blank(), panel.border = element_rect(fill = NA, linewidth = 0.3))
+p_map
+save_gg(p_map, "figS1_subcounty_clusters_map.png", width = FIG_W_FULL, height = 4.6)
+```
+
+**Figure S1.** One NDVI time series was extracted at the centre of each of the 22 sub-counties, so every sub-county counts equally. Cluster 1 (blue, `r sum(subcounty_lookup$fda_cluster == 1)` sub-counties) and Cluster 2 (orange, `r sum(subcounty_lookup$fda_cluster == 2)` sub-counties) cover most of the district; Cluster 3 (green) is Ruborogota alone, which has a distinct, more stable vegetation pattern.
+
+```{r figS2_fpca, echo=FALSE, cache=FALSE, fig.width=3.5, fig.height=3, fig.cap="Figure S2. Variance in sub-county seasonal NDVI explained by each functional principal component (bars) and cumulative variance (line)."}
+# Recomputes the functional PCA from the saved monthly NDVI, repeating the NDVI script's steps
+ndvi_m <- readr::read_csv(file.path(DATA_DIR, "ndvi_subcounty_monthly.csv"), show_col_types = FALSE)
+clim_mat <- ndvi_m |>
+  dplyr::arrange(point_id, month) |>
+  dplyr::group_by(point_id) |>
+  dplyr::mutate(ndvi_imputed = dplyr::if_else(ndvi_flag == "MISSING",
+                  dplyr::lag(ndvi_mean, 1, default = mean(ndvi_mean, na.rm = TRUE)), ndvi_mean)) |>
+  dplyr::ungroup() |>
+  dplyr::group_by(point_id, month_n) |>
+  dplyr::summarise(v = mean(ndvi_imputed, na.rm = TRUE), .groups = "drop") |>
+  tidyr::pivot_wider(names_from = point_id, values_from = v) |>
+  dplyr::arrange(month_n) |> dplyr::select(-month_n) |> as.matrix()
+for (j in seq_len(ncol(clim_mat))) {
+  na_j <- is.na(clim_mat[, j]); if (any(na_j)) clim_mat[na_j, j] <- mean(clim_mat[, j], na.rm = TRUE)
+}
+fd_obj <- fda::smooth.basis(1:12, clim_mat, fda::create.fourier.basis(c(1, 12), 5))$fd
+fpca   <- fda::pca.fd(fd_obj, nharm = 3)
+pve_df <- tibble::tibble(component = paste0("FPC", 1:3), pve = round(fpca$varprop * 100, 1)) |>
+  dplyr::mutate(cum = cumsum(pve))
+
+p_fpca <- ggplot(pve_df, aes(component, pve)) +
+  geom_col(fill = COL["blue"], width = 0.6) +
+  geom_line(aes(y = cum, group = 1), colour = COL["vermillion"], linewidth = 0.6) +
+  geom_point(aes(y = cum), colour = COL["vermillion"], size = 1.6) +
+  geom_text(aes(label = sprintf("%.1f", pve)), vjust = -0.5, size = 2.6) +
+  scale_y_continuous(limits = c(0, 105), breaks = seq(0, 100, 20), expand = expansion(mult = c(0, 0))) +
+  labs(x = NULL, y = "Variance explained (%)") + theme_pub()
+p_fpca
+save_gg(p_fpca, "figS2_fpca_variance.png", width = FIG_W_HALF, height = 3)
+```
+
+**Figure S2.** The first functional component explains `r pve_df$pve[1]`% of the differences between sub-counties (mainly how strongly NDVI swings between wet and dry seasons) and the second `r pve_df$pve[2]`% (mainly timing). The three components together explain `r sprintf("%.0f", max(pve_df$cum))`%, and their scores were used to form the three clusters.
+
+```{r figS3_profiles, echo=FALSE, cache=FALSE, fig.width=7.5, fig.height=3.5, fig.cap="Figure S3. Monthly NDVI by FDA cluster (mean and one standard deviation across years, 2000 to 2026)."}
+ndvi_clim <- readr::read_csv(file.path(DATA_DIR, "ndvi_climatology_monthly.csv"), show_col_types = FALSE) |>
+  dplyr::mutate(month_abbr = factor(month.abb[month_n], levels = month.abb),
+                cluster = sprintf("Cluster %d", fda_cluster))
+p_prof <- ggplot(ndvi_clim, aes(month_abbr, ndvi_clim_mean, colour = cluster, fill = cluster, group = cluster)) +
+  geom_ribbon(aes(ymin = ndvi_clim_mean - ndvi_clim_sd, ymax = ndvi_clim_mean + ndvi_clim_sd),
+              alpha = 0.12, colour = NA) +
+  geom_line(linewidth = 0.7) + geom_point(size = 1.4) +
+  scale_colour_manual(values = CLUSTER_COL, name = NULL) +
+  scale_fill_manual(values = CLUSTER_COL, name = NULL) +
+  labs(x = NULL, y = "NDVI") + theme_pub() + theme(legend.position = "top")
+p_prof
+save_gg(p_prof, "figS3_ndvi_cluster_profiles.png", width = FIG_W_FULL, height = 3.5)
+```
+
+**Figure S3.** Ruborogota (Cluster 3) stays green all year (NDVI around 0.75). Clusters 1 and 2 are less green and dip clearly in July and August; Cluster 2 has the widest seasonal swing. Shading shows the year-to-year variation.
+
+```{r figS4_lambda_clusters, echo=FALSE, cache=FALSE, fig.width=7.5, fig.height=3.5, fig.cap="Figure S4. Seasonal multiplier of the force of infection by FDA cluster."}
+lam_cl <- lambda_env_cluster |>
+  dplyr::mutate(month_abbr = factor(month.abb[month_n], levels = month.abb),
+                cluster = sprintf("Cluster %d", fda_cluster))
+p_lamcl <- ggplot(lam_cl, aes(month_abbr, lambda_env, colour = cluster, group = cluster)) +
+  geom_line(linewidth = 0.7) + geom_point(size = 1.4) +
+  scale_colour_manual(values = CLUSTER_COL, name = NULL) +
+  scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, 0.2)) +
+  labs(x = NULL, y = expression("Seasonal multiplier ("*lambda[env]*")")) +
+  theme_pub() + theme(legend.position = "top")
+p_lamcl
+save_gg(p_lamcl, "figS4_lambda_env_by_cluster.png", width = FIG_W_FULL, height = 3.5)
+```
+
+**Figure S4.** Once each cluster's NDVI is rescaled to 0.2 to 1.0, the three clusters share the same two-peak pattern. Differences in greenness between sub-counties therefore change the timing of risk very little, which is why a single district multiplier (Figure 1) is used.
+
+# Model framework
+
+```{r framework_diagram, echo=FALSE, cache=FALSE, fig.width=4.5, fig.height=5, fig.cap="Model framework and the quantities passed between models."}
+g_arch <- grViz("
+digraph Architecture {
+  graph [rankdir=TB, fontname='Arial', bgcolor='white', pad=0.2, nodesep=0.5, ranksep=0.45]
+  node  [shape=box, style='filled,rounded', fontname='Arial', fontsize=13, penwidth=1.2, margin='0.18,0.08']
+  edge  [fontname='Arial', fontsize=11, color='grey30', arrowsize=0.7]
+  NDVI [label='Satellite NDVI\n(MODIS, 22 sub-counties)', fillcolor='#E5F4EF', color='#009E73']
+  M1   [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>Model 1</TD></TR><TR><TD>Transmission (SEIR<SUB>1</SUB>R<SUB>2</SUB>)</TD></TR></TABLE>>, fillcolor='#E8F1FA', color='#0072B2']
+  M2   [label='Model 2\nPregnancy and excess loss', fillcolor='#FBE3D6', color='#D55E00']
+  M3   [label='Model 3\nDetection cascade',         fillcolor='#FDF1DC', color='#E69F00']
+  SA   [label='Sensitivity analysis\n(Morris, Sobol)', fillcolor='#F7E8F1', color='#CC79A7']
+  NDVI -> M1 [label='  seasonal forcing']
+  M1   -> M2 [label='  λ(t)']
+  M2   -> M3 [label='  excess losses']
+  M1 -> SA [style=dashed]
+  M2 -> SA [style=dashed]
+  M3 -> SA [style=dashed]
+}
+")
+g_arch
+save_grViz(g_arch, "fig_diagram_framework.png", width_in = 4.5)
+```
+
+The models run in sequence, so uncertainty flows downstream: uncertainty in the force of infection (Model 1) carries into the number of losses (Model 2) and then into the number detected (Model 3). The sensitivity analysis varies parameters from all three models together.
+
+# Model 1: RVF transmission in the district population {#model1}
+
+> **Research question 1** (burden), part 1: chunks `lambda_fit` to `m1_calibration` estimate how much RVFV infection occurs in the district.
+
+**Purpose.** Simulate endemic RVFV infection in all 635,077 residents to obtain the time-varying force of infection λ(t) = λ × λ_env(t) that pregnant women are exposed to. Humans do not transmit RVFV to each other (A2), so λ is an external spillover hazard and a human reproduction number (R₀) is not defined.
+
+```{r model1_diagram, echo=FALSE, cache=FALSE, fig.width=7.5, fig.height=2.2, fig.cap="Model 1 compartments. All compartments also exit through natural mortality (μH)."}
+g1 <- grViz("
+digraph SEIR1R2 {
+  graph [rankdir=LR, fontname='Arial', bgcolor='white', pad=0.2, nodesep=0.4, ranksep=0.5]
+  node  [shape=box, style='filled,rounded', fontname='Arial', fontsize=13, width=1.2, height=0.75, penwidth=1.2]
+  edge  [fontname='Arial', fontsize=13, color='grey25', arrowsize=0.7]
+  S  [label='S\nSusceptible',    fillcolor='#E8F1FA', color='#0072B2']
+  E  [label='E\nExposed',        fillcolor='#FDF1DC', color='#E69F00']
+  I  [label='I\nInfectious',     fillcolor='#FBE3D6', color='#D55E00']
+  R1 [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>R<SUB>1</SUB></TD></TR><TR><TD>IgM positive</TD></TR></TABLE>>, fillcolor='#FEF9E1', color='#B8A100']
+  R2 [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>R<SUB>2</SUB></TD></TR><TR><TD>IgG positive</TD></TR></TABLE>>, fillcolor='#F7E8F1', color='#CC79A7']
+  B  [label='Births', shape=plaintext, style='', fontsize=12]
+  B  -> S  [style=dashed, label=< μ<SUB>H</SUB>N>]
+  S  -> E  [label=' λ(t)']
+  E  -> I  [label=' σ']
+  I  -> R1 [label=' γ']
+  R1 -> R2 [label=' ω']
+}
+")
+g1
+save_grViz(g1, "fig_diagram_model1.png", width_in = FIG_W_FULL)
+```
+
+People move from susceptible (S) to exposed (E) at rate λ(t), become infectious (I, viraemic, PCR positive) after the incubation period, then IgM positive (R₁), then IgG positive and immune for life (R₂).
+
+## Estimating the force of infection from age-specific seroprevalence
+
+**Why.** λ is the most influential input of the whole framework (Section 7). It is estimated with the catalytic model P(a) = 1 − exp(−λa), which gives the probability of being IgG positive at age a when the yearly infection risk is λ. The model is fitted by maximum likelihood to the four age groups of Nyakarahuka et al. (2026), using assumed age-group mid-points (study median age 39 years). The same age structure is then scaled to Isingiro's observed 13.84%.
+
+```{r lambda_fit}
+sero_age <- tibble::tibble(
+  age_group = c("0-17", "18-30", "31-49", "50+"),
+  n         = c(64, 180, 273, 249),     # participants (Nyakarahuka et al. 2026, Table 1)
+  pos       = c(0, 13, 29, 46),         # IgG positive
+  age_mid   = c(12, 24, 40, 60)         # assumed mid-points
+)
+catalytic_nll <- function(lam, d)
+  -sum(d$pos * log(1 - exp(-lam * d$age_mid)) - (d$n - d$pos) * lam * d$age_mid)
+
+# Three districts pooled, with 95% profile-likelihood CI
+fit_pooled          <- optimize(catalytic_nll, c(1e-5, 0.1), d = sero_age)
+lambda_yr_pooled    <- fit_pooled$minimum
+prof_fn             <- function(l) catalytic_nll(l, sero_age) - fit_pooled$objective - qchisq(0.95, 1) / 2
+lambda_yr_pooled_ci <- c(uniroot(prof_fn, c(1e-6, lambda_yr_pooled))$root,
+                         uniroot(prof_fn, c(lambda_yr_pooled, 0.1))$root)
+
+# Isingiro: same age structure scaled to 53/383, CI from the exact binomial CI
+age_avg_prev    <- function(l) sum(sero_age$n * (1 - exp(-l * sero_age$age_mid))) / sum(sero_age$n)
+lambda_for_prev <- function(p) uniroot(function(l) age_avg_prev(l) - p, c(1e-7, 0.2))$root
+isingiro_ci           <- binom.test(53, 383)$conf.int
+lambda_yr             <- lambda_for_prev(53 / 383)          # value used in the models
+lambda_yr_isingiro_ci <- c(lambda_for_prev(isingiro_ci[1]), lambda_for_prev(isingiro_ci[2]))
+
+lambda_yr_25yr <- -log(1 - 0.1384) / 25   # simple single-exposure-period method, for comparison
+lambda_yr_jid  <- 0.00096                 # modal value for SW Uganda, Bakamutumaho et al.
+
+tibble::tibble(
+  Estimate = c("Isingiro level (used in the models)", "Three districts pooled",
+               "Single 25-year exposure period", "Bakamutumaho et al., modal value, SW Uganda"),
+  `λ per year` = sprintf("%.4f", c(lambda_yr, lambda_yr_pooled, lambda_yr_25yr, lambda_yr_jid)),
+  `95% CI` = c(sprintf("%.4f to %.4f", lambda_yr_isingiro_ci[1], lambda_yr_isingiro_ci[2]),
+               sprintf("%.4f to %.4f", lambda_yr_pooled_ci[1], lambda_yr_pooled_ci[2]), "", "")
+) |> knitr::kable(caption = "Force of infection estimates") |> kbl_style()
+```
+
+**What the table shows.** Fitting to the age data gives λ = `r sprintf("%.4f", lambda_yr)` per year for Isingiro (95% CI `r sprintf("%.4f", lambda_yr_isingiro_ci[1])` to `r sprintf("%.4f", lambda_yr_isingiro_ci[2])`), meaning about 4 in 1,000 susceptible people are infected each year. A simple calculation that assumes everyone was exposed for 25 years gives a value about 60% higher, and the modal value across SW Uganda reported by Bakamutumaho et al. is lower. The age-based estimate lies between the two.
+
+```{r figS5_agefit, echo=FALSE, cache=FALSE, fig.width=7.5, fig.height=3.5, fig.cap="Figure S5. Observed age-specific IgG seroprevalence (points with 95% CI; Nyakarahuka et al. 2026) and catalytic-model fits."}
+obs_ci   <- t(mapply(function(k, n) binom.test(k, n)$conf.int, sero_age$pos, sero_age$n))
+sero_obs <- sero_age |> dplyr::mutate(prev = pos / n, lo = obs_ci[, 1], hi = obs_ci[, 2])
+fit_levels <- c("Isingiro level (used)", "Three districts pooled", "Single 25-year exposure")
+fit_curves <- dplyr::bind_rows(
+  tibble::tibble(age = 0:80, prev = 1 - exp(-lambda_yr * (0:80)),        fit = fit_levels[1]),
+  tibble::tibble(age = 0:80, prev = 1 - exp(-lambda_yr_pooled * (0:80)), fit = fit_levels[2]),
+  tibble::tibble(age = 0:80, prev = 1 - exp(-lambda_yr_25yr * (0:80)),   fit = fit_levels[3])) |>
+  dplyr::mutate(fit = factor(fit, levels = fit_levels))
+
+p_agefit <- ggplot() +
+  geom_line(data = fit_curves, aes(age, prev * 100, colour = fit, linetype = fit), linewidth = 0.7) +
+  geom_errorbar(data = sero_obs, aes(age_mid, ymin = lo * 100, ymax = hi * 100), width = 1.5, linewidth = 0.4) +
+  geom_point(data = sero_obs, aes(age_mid, prev * 100), size = 1.8) +
+  scale_colour_manual(values = setNames(c(COL[["blue"]], COL[["orange"]], "grey55"), fit_levels), name = NULL) +
+  scale_linetype_manual(values = setNames(c("solid", "solid", "dashed"), fit_levels), name = NULL) +
+  scale_x_continuous(breaks = seq(0, 80, 10), expand = expansion(mult = c(0, 0.02))) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Age (years)", y = "IgG seroprevalence (%)") +
+  theme_pub() + theme(legend.position = "top")
+p_agefit
+save_gg(p_agefit, "figS5_age_seroprevalence_fit.png", width = FIG_W_FULL, height = 3.5)
+```
+
+**Figure S5.** Points are the observed seroprevalence in each age group. The blue curve (used) passes close to all four groups, while the grey dashed curve from the 25-year assumption sits above every observed point, showing that it overstates transmission.
+
+## Parameters and starting values
+
+```{r m1_params}
+params_m1 <- list(
+  N_total                 = 635077,         # UBOS 2024
+  seroprevalence_isingiro = 0.1384,         # Nyakarahuka et al. 2026 (53/383)
+  lambda_base             = lambda_yr / 365, # per day, from the age-structured fit
+  sigma                   = 1 / 4,          # incubation 4 days (WHO)
+  gamma                   = 1 / 5.5,        # viraemia 5.5 days (WHO)
+  omega                   = 1 / 41,         # IgM-positive 41 days (Shoemaker et al. 2019)
+  mu_H                    = 1 / (68.2 * 365) # life expectancy 68.2 years (UBOS 2024)
+)
+
+# Start at the endemic equilibrium of the model, with the immune compartment set to the
+# observed seroprevalence, so the run does not begin from an arbitrary state
+N <- params_m1$N_total; lam <- params_m1$lambda_base; mu <- params_m1$mu_H
+S_star  <- mu * N / (lam + mu)
+E_star  <- lam * S_star / (params_m1$sigma + mu)
+I_star  <- params_m1$sigma * E_star / (params_m1$gamma + mu)
+R1_star <- params_m1$gamma * I_star / (params_m1$omega + mu)
+params_m1$R2_0 <- round(N * params_m1$seroprevalence_isingiro)
+params_m1$E0   <- round(E_star)
+params_m1$I0   <- round(I_star)
+params_m1$R1_0 <- round(R1_star)
+params_m1$S0   <- round(N - params_m1$R2_0 - E_star - I_star - R1_star)
+
+tibble::tibble(
+  Parameter = c("Population (N)", "IgG seroprevalence", "Force of infection λ",
+                "Incubation rate σ", "Recovery rate γ", "IgM waning rate ω", "Mortality rate μH",
+                "Initial S", "Initial E", "Initial I", "Initial R₁", "Initial R₂"),
+  Value = c(format(N, big.mark = ","), "13.84%",
+            sprintf("%.2e per day (%.4f per year)", lam, lam * 365),
+            "1/4 per day", "1/5.5 per day", "1/41 per day", sprintf("1/%s per day", format(round(1 / mu), big.mark = ",")),
+            format(params_m1$S0, big.mark = ","), params_m1$E0, params_m1$I0, params_m1$R1_0,
+            format(params_m1$R2_0, big.mark = ",")),
+  Source = c("UBOS 2024", "Nyakarahuka et al. 2026", "Fitted (Section 4.1)", "WHO", "WHO",
+             "Shoemaker et al. 2019", "UBOS 2024", "Equilibrium", "Equilibrium", "Equilibrium",
+             "Equilibrium", "Observed seroprevalence")
+) |> knitr::kable(caption = "Model 1 parameters and initial conditions") |> kbl_style()
+```
+
+## Model equations and simulation
+
+The model is run for 100 years with daily steps. The first 90 years are a burn-in that lets the seasonal cycle settle; years 90 to 100 are analysed.
+
+```{r m1_odes}
+seir1r2_odes <- function(t, state, params) {
+  with(as.list(c(state, params)), {
+    N        <- S + E + I + R1 + R2
+    lambda_t <- lambda_base * lambda_env_fn(t)       # seasonal force of infection
+    dS  <- mu_H * N - (lambda_t + mu_H) * S
+    dE  <- lambda_t * S - (sigma + mu_H) * E
+    dI  <- sigma * E - (gamma + mu_H) * I
+    dR1 <- gamma * I - (omega + mu_H) * R1
+    dR2 <- omega * R1 - mu_H * R2                    # lifelong immunity (A3)
+    list(c(dS, dE, dI, dR1, dR2))
+  })
+}
+```
+
+```{r m1_run, cache.extra=digest::digest(list(lambda_env_district, params_m1))}
+RUN_YEARS  <- 100
+BURNIN_YRS <- 90
+state_m1 <- c(S = params_m1$S0, E = params_m1$E0, I = params_m1$I0,
+              R1 = params_m1$R1_0, R2 = params_m1$R2_0)
+out_m1_full <- deSolve::ode(y = state_m1, times = seq(0, RUN_YEARS * 365, by = 1),
+                            func = seir1r2_odes, parms = unlist(params_m1), method = "lsoda") |>
+  as.data.frame() |>
+  mutate(year = time / 365, N_total = S + E + I + R1 + R2, seroprevalence = R2 / N_total,
+         lambda_env_val = lambda_env_fn(time))
+out_m1 <- filter(out_m1_full, year >= BURNIN_YRS)
+```
+
+## Calibration check
+
+```{r m1_calibration}
+annual_new_inf <- params_m1$lambda_base * mean(out_m1$S) * 365
+sero_end       <- tail(out_m1_full, 1)$seroprevalence * 100
+ISINGIRO_AREA_KM2 <- 2610
+scaled_lo <- round(314  * ISINGIRO_AREA_KM2 / 1369)
+scaled_hi <- round(2111 * ISINGIRO_AREA_KM2 / 1369)
+calibration_pass <- annual_new_inf >= scaled_lo & annual_new_inf <= scaled_hi
+
+tibble::tibble(
+  Check = c("Annual new infections (model)", "Expected range, scaled to Isingiro (Bakamutumaho et al.)",
+            "Result", "Seroprevalence predicted for the survey age mix", "Seroprevalence at year 100 (model)"),
+  Value = c(format(round(annual_new_inf), big.mark = ","),
+            sprintf("%s to %s", format(scaled_lo, big.mark = ","), format(scaled_hi, big.mark = ",")),
+            ifelse(calibration_pass, "Within range", "Outside range"),
+            sprintf("%.2f%% (observed 13.84%%)", age_avg_prev(lambda_yr) * 100),
+            sprintf("%.2f%%", sero_end))
+) |> knitr::kable(caption = "Model 1 calibration checks") |> kbl_style()
+```
+
+**What the checks show.** The model produces `r format(round(annual_new_inf), big.mark = ",")` new infections a year, which is `r ifelse(calibration_pass, "within", "outside")` the range expected from an independent study in SW Uganda (`r format(scaled_lo, big.mark = ",")` to `r format(scaled_hi, big.mark = ",")` after scaling to Isingiro's area). The fitted λ reproduces the observed 13.84% in the survey age mix. Over 100 years the model's seroprevalence drifts only slightly, to `r sprintf("%.1f", sero_end)`%, because its long-run equilibrium (λ/(λ + μH)) is somewhat higher than the observed value.
+
+## Results: transmission dynamics
+
+```{r m1_plot, cache=FALSE, fig.width=7.5, fig.height=7, fig.cap="Figure 2. Model 1 dynamics in Isingiro District, simulation years 90 to 100."}
+mk_panel <- function(df, y, ylab, col) {
+  ggplot(df, aes(year, .data[[y]])) +
+    geom_line(colour = col, linewidth = 0.5) +
+    scale_x_continuous(breaks = seq(90, 100, 2)) +
+    labs(x = NULL, y = ylab) + theme_pub()
+}
+d1 <- mutate(out_m1, sero_pct = seroprevalence * 100)
+p_m1 <- (mk_panel(d1, "E", "Exposed", COL[["blue"]]) /
+         mk_panel(d1, "I", "Infectious", COL[["vermillion"]]) /
+         mk_panel(d1, "R1", "IgM positive", COL[["orange"]]) /
+         (mk_panel(d1, "sero_pct", "IgG seroprevalence (%)", COL[["purple"]]) +
+            geom_hline(yintercept = 13.84, linetype = "dashed", linewidth = 0.4, colour = "grey30") +
+            annotate("text", x = 90, y = 13.84, label = "Observed 13.84%", hjust = 0, vjust = -0.5,
+                     size = 2.6, colour = "grey30") +
+            expand_limits(y = 13) + labs(x = "Simulation year"))) +
+  plot_annotation(tag_levels = "A")
+p_m1
+save_gg(p_m1, "fig2_model1_dynamics.png", width = FIG_W_FULL, height = 7)
+```
+
+**What Figure 2 shows.** Each panel repeats the same two-peak pattern every year, confirming the model has reached a stable seasonal cycle.
+
+- **A (Exposed):** `r round(min(out_m1$E))` to `r round(max(out_m1$E))` people are incubating at any time.
+- **B (Infectious):** only `r round(min(out_m1$I))` to `r round(max(out_m1$I))` people are viraemic at any time in a district of 635,077. Transmission is low-intensity and easily missed.
+- **C (IgM positive):** `r round(min(out_m1$R1))` to `r round(max(out_m1$R1))` people. The IgM phase lasts much longer than viraemia, so serology has a far larger detection window than PCR.
+- **D (IgG seroprevalence):** stays close to the observed value (dashed line), changing very little within each year because new infections add little to a large immune population.
+
+```{r m1_snapshot, echo=FALSE}
+out_m1_full |>
+  filter(time %in% (c(90, 95, 100) * 365)) |>
+  transmute(Year = round(year), S = format(round(S), big.mark = ","), E = round(E, 1), I = round(I, 1),
+            `R₁ (IgM+)` = round(R1, 1), `R₂ (IgG+)` = format(round(R2), big.mark = ","),
+            Seroprevalence = sprintf("%.2f%%", seroprevalence * 100)) |>
+  knitr::kable(caption = "Model 1 state on 1 January of simulation years 90, 95 and 100") |> kbl_style()
+```
+
+The table confirms the stability: the compartments barely change between years 90 and 100.
+
+# Model 2: pregnancy and RVF-attributable excess loss {#model2}
+
+> **Research question 1** (burden), part 2: chunks `m2_stage1` to `m2_plot` turn infections into excess pregnancy losses. **Research question 2** is completed by chunk `m2_monthly`.
+
+**Purpose.** Apply the force of infection from Model 1 to pregnant women and count the pregnancy losses that occur above the background rate because of RVFV infection. This answers research question 1.
+
+## Stage 1: the pregnant population
+
+**Why.** Only pregnant women can have an RVF-attributable pregnancy loss, so the model needs the number of pregnant women and the number of new pregnancies per day.
+
+```{r m2_stage1}
+stage1 <- list(
+  N_total            = 635077,
+  prop_female        = 339276 / 635077,      # UBOS 2024, Isingiro
+  prop_WRA_of_female = 11764068 / 23591128,  # women 15-49 / all women, UBOS 2024 Table 2.3A
+  pi                 = 0.093,                # proportion of WRA pregnant, UDHS 2022 (Ankole)
+  gestation_days     = 270,
+  mu_bgd_pp          = 0.12,                 # background miscarriage per pregnancy, Baudin et al. 2016
+  GFR                = 194,                  # rural GFR, UDHS 2022 (cross-check only)
+  fetal_loss_rate    = 0.153                 # Quenby et al. 2021 (cross-check only)
+)
+stage1$N_WRA  <- stage1$N_total * stage1$prop_female * stage1$prop_WRA_of_female
+stage1$N_preg <- round(stage1$N_WRA * stage1$pi)
+kappa_rate    <- 1 / stage1$gestation_days                 # delivery rate
+mu_bgd_day    <- stage1$mu_bgd_pp / stage1$gestation_days  # background loss per day
+# New pregnancies per year needed to keep the pregnant population at π at steady state
+stage1$annual_preg <- stage1$N_preg * (kappa_rate + mu_bgd_day) * 365
+
+# Cross-check: proportion pregnant implied by the rural fertility rate
+alpha_gfr    <- (stage1$N_WRA * stage1$GFR / 1000 / (1 - stage1$fetal_loss_rate)) / (stage1$N_WRA * 365)
+pi_from_gfr  <- alpha_gfr / (alpha_gfr + kappa_rate + mu_bgd_day)
+
+tibble::tibble(
+  Quantity = c("Women of reproductive age (WRA)", "Proportion of WRA pregnant (π)",
+               "Pregnant women at any time", "New pregnancies per year",
+               "Cross-check: π implied by GFR 194"),
+  Value = c(format(round(stage1$N_WRA), big.mark = ","), sprintf("%.1f%%", stage1$pi * 100),
+            format(stage1$N_preg, big.mark = ","), format(round(stage1$annual_preg), big.mark = ","),
+            sprintf("%.1f%%", pi_from_gfr * 100))
+) |> knitr::kable(caption = "Stage 1: pregnant population of Isingiro") |> kbl_style()
+```
+
+**What the table shows.** About `r format(round(stage1$N_WRA), big.mark = ",")` women in Isingiro are aged 15 to 49, and `r format(stage1$N_preg, big.mark = ",")` of them are pregnant at any time. The proportion implied by the fertility rate (`r sprintf("%.1f", pi_from_gfr * 100)`%) is higher than the observed 9.3%, partly because women in household surveys often do not yet report early pregnancies; the observed value is used.
+
+## Stage 2: infection and excess loss in pregnant women
+
+```{r model2_diagram, echo=FALSE, cache=FALSE, fig.width=7.5, fig.height=2.8, fig.cap="Model 2 compartments for pregnant women. L accumulates RVF-attributable excess losses from the infectious (hexcess) and IgM-positive (hdelayed) stages."}
+g2 <- grViz("
+digraph PregnancyModel {
+  graph [rankdir=LR, fontname='Arial', bgcolor='white', pad=0.2, nodesep=0.45, ranksep=0.5]
+  node  [shape=box, style='filled,rounded', fontname='Arial', fontsize=13, width=1.15, height=0.75, penwidth=1.2]
+  edge  [fontname='Arial', fontsize=13, color='grey25', arrowsize=0.7]
+  Sp  [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>S<SUB>p</SUB></TD></TR><TR><TD>Susceptible</TD></TR></TABLE>>, fillcolor='#E8F1FA', color='#0072B2']
+  Ep  [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>E<SUB>p</SUB></TD></TR><TR><TD>Exposed</TD></TR></TABLE>>, fillcolor='#FDF1DC', color='#E69F00']
+  Ip  [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>I<SUB>p</SUB></TD></TR><TR><TD>Infectious</TD></TR></TABLE>>, fillcolor='#FBE3D6', color='#D55E00']
+  R1p [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>R<SUB>1p</SUB></TD></TR><TR><TD>IgM positive</TD></TR></TABLE>>, fillcolor='#FEF9E1', color='#B8A100']
+  R2p [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>R<SUB>2p</SUB></TD></TR><TR><TD>IgG positive</TD></TR></TABLE>>, fillcolor='#F7E8F1', color='#CC79A7']
+  L   [label=<<TABLE BORDER=\"0\" CELLBORDER=\"0\" CELLPADDING=\"1\"><TR><TD>L</TD></TR><TR><TD>Excess losses</TD></TR></TABLE>>, fillcolor='white', color='#D55E00', penwidth=2.2]
+  P   [label='New pregnancies', shape=plaintext, style='', fontsize=12]
+  P   -> Sp  [style=dashed, label=' Π']
+  Sp  -> Ep  [label=' λ(t)']
+  Ep  -> Ip  [label=' σ']
+  Ip  -> R1p [label=' γ']
+  R1p -> R2p [label=' ω']
+  Ip  -> L   [label=<h<SUB>excess</SUB>>, color='#D55E00', penwidth=1.6]
+  R1p -> L   [label=<h<SUB>delayed</SUB>>, color='#D55E00', style=dashed]
+}
+")
+g2
+save_grViz(g2, "fig_diagram_model2.png", width_in = FIG_W_FULL)
+```
+
+Pregnant women follow the same infection stages as in Model 1 and leave the pregnant population at delivery (κ) or through background miscarriage. Two extra hazards send women to the loss compartment L: h_excess while viraemic (risk ratio 4.55) and h_delayed while IgM positive (risk ratio 2.0). Each hazard is chosen so that, competing with recovery, delivery and background loss, the extra probability of losing the pregnancy equals (RR − 1) × background risk (competing hazards, Keiding 1991).
+
+```{r m2_params}
+params_m2 <- list(
+  lambda_base = params_m1$lambda_base, sigma = params_m1$sigma, gamma = params_m1$gamma,
+  omega = params_m1$omega, mu_H = params_m1$mu_H,
+  mu_bgd    = mu_bgd_day,                  # background loss per day
+  mu_bgd_pp = stage1$mu_bgd_pp,            # background loss per pregnancy
+  kappa     = kappa_rate,                  # delivery rate
+  RR        = (15 / 28) / (12 / 102),      # 4.55, Baudin et al. 2016
+  RR_igm    = 2.0,                         # assumption
+  Pi        = stage1$annual_preg / 365,    # new pregnancies per day
+  S_p0 = round(stage1$N_preg * (1 - params_m1$seroprevalence_isingiro)) - 1, E_p0 = 1, I_p0 = 0,
+  R1_p0 = 0, R2_p0 = round(stage1$N_preg * params_m1$seroprevalence_isingiro), L0 = 0
+)
+h_from_rr <- function(rr, exit) { p <- (rr - 1) * params_m2$mu_bgd_pp; p * exit / (1 - p) }
+h_exc <- h_from_rr(params_m2$RR,     params_m2$gamma + params_m2$mu_bgd + params_m2$kappa)
+h_del <- h_from_rr(params_m2$RR_igm, params_m2$omega + params_m2$mu_bgd + params_m2$kappa)
+
+tibble::tibble(
+  Parameter = c("New pregnancies per day (Π)", "Background loss per pregnancy", "Background loss per day",
+                "Delivery rate (κ)", "Miscarriage RR, acute phase", "Miscarriage RR, IgM phase",
+                "Excess loss hazard while infectious", "Excess loss hazard while IgM positive"),
+  Value = c(sprintf("%.1f", params_m2$Pi), "12%", sprintf("%.2e", params_m2$mu_bgd), "1/270 per day",
+            "4.55 (2.42 to 8.58)", "2.0 (1.0 to 3.5)", sprintf("%.4f per day", h_exc), sprintf("%.4f per day", h_del)),
+  Source = c("Stage 1", "Baudin et al. 2016", "12% / 270 days", "Standard gestation",
+             "Baudin et al. 2016", "Assumption", "Competing hazards", "Competing hazards")
+) |> knitr::kable(caption = "Model 2 parameters") |> kbl_style()
+```
+
+```{r m2_odes}
+pregnancy_model_odes <- function(t, state, params) {
+  with(as.list(c(state, params)), {
+    lambda_t  <- lambda_base * lambda_env_fn(t)
+    P_excess  <- (RR - 1) * mu_bgd_pp
+    h_excess  <- P_excess * (gamma + mu_bgd + kappa) / (1 - P_excess)
+    P_delayed <- (RR_igm - 1) * mu_bgd_pp
+    h_delayed <- P_delayed * (omega + mu_bgd + kappa) / (1 - P_delayed)
+    dS_p  <- Pi - (lambda_t + mu_bgd + kappa) * S_p
+    dE_p  <- lambda_t * S_p - (sigma + mu_bgd + kappa) * E_p
+    dI_p  <- sigma * E_p - (h_excess + gamma + mu_bgd + kappa) * I_p
+    dR1_p <- gamma * I_p - (h_delayed + omega + mu_bgd + kappa) * R1_p
+    dR2_p <- omega * R1_p - (mu_bgd + kappa) * R2_p
+    dL    <- h_excess * I_p + h_delayed * R1_p     # cumulative excess losses (A4, A8)
+    list(c(dS_p, dE_p, dI_p, dR1_p, dR2_p, dL))
+  })
+}
+```
+
+```{r m2_run, cache.extra=digest::digest(list(lambda_env_district, params_m2))}
+state_m2 <- c(S_p = params_m2$S_p0, E_p = params_m2$E_p0, I_p = params_m2$I_p0,
+              R1_p = params_m2$R1_p0, R2_p = params_m2$R2_p0, L = params_m2$L0)
+out_m2_full <- deSolve::ode(y = state_m2, times = seq(0, RUN_YEARS * 365, by = 1),
+                            func = pregnancy_model_odes, parms = unlist(params_m2), method = "lsoda") |>
+  as.data.frame() |>
+  mutate(year = time / 365, N_preg_t = S_p + E_p + I_p + R1_p + R2_p,
+         daily_excess_loss = c(diff(L), NA), daily_bgd_loss = params_m2$mu_bgd * N_preg_t,
+         month_n = t_to_month_n(time))
+out_m2 <- filter(out_m2_full, year >= BURNIN_YRS)
+annual_excess <- mean(out_m2$daily_excess_loss, na.rm = TRUE) * 365
+annual_bgd    <- mean(out_m2$daily_bgd_loss) * 365
+```
+
+## Results: annual excess losses
+
+```{r m2_plot, cache=FALSE, fig.width=7.5, fig.height=5.5, fig.cap="Figure 3. Model 2 dynamics among pregnant women and annualised RVF-attributable excess losses, simulation years 90 to 100."}
+p2_L <- ggplot(filter(out_m2, !is.na(daily_excess_loss)), aes(year, daily_excess_loss * 365)) +
+  geom_line(colour = COL[["vermillion"]], linewidth = 0.6) +
+  geom_hline(yintercept = annual_excess, linetype = "dashed", linewidth = 0.4) +
+  scale_x_continuous(breaks = seq(90, 100, 1)) +
+  scale_y_continuous(sec.axis = dup_axis(breaks = annual_excess, name = NULL,
+                                         labels = sprintf("Mean %.0f", annual_excess))) +
+  expand_limits(y = 0) +
+  labs(x = "Simulation year", y = "Excess losses per year") + theme_pub()
+p_m2 <- ((mk_panel(out_m2, "E_p", "Exposed", COL[["blue"]]) |
+          mk_panel(out_m2, "I_p", "Infectious", COL[["vermillion"]]) |
+          mk_panel(out_m2, "R1_p", "IgM positive", COL[["orange"]])) / p2_L) +
+  plot_layout(heights = c(1, 1.3)) + plot_annotation(tag_levels = "A")
+p_m2
+save_gg(p_m2, "fig3_model2_dynamics.png", width = FIG_W_FULL, height = 5.5)
+```
+
+**What Figure 3 shows (research question 1).**
+
+- **A to C:** at any moment fewer than one pregnant woman is exposed (up to `r sprintf("%.1f", max(out_m2$E_p))`) or infectious (up to `r sprintf("%.1f", max(out_m2$I_p))`), and up to `r sprintf("%.1f", max(out_m2$R1_p))` are IgM positive. The burden builds up from the steady flow of these few women into L over the year.
+- **D:** the rate of excess losses rises and falls with the seasons around a **mean of `r round(annual_excess)` RVF-attributable excess pregnancy losses per year**, against `r format(round(annual_bgd), big.mark = ",")` background losses, so RVF accounts for `r sprintf("%.2f", annual_excess / annual_bgd * 100)`% of all pregnancy losses in the district. Because the excess scales with λ, the uncertainty in λ alone gives roughly `r round(annual_excess * lambda_yr_isingiro_ci[1] / lambda_yr)` to `r round(annual_excess * lambda_yr_isingiro_ci[2] / lambda_yr)` losses per year.
+
+## Results: seasonal distribution of losses
+
+```{r m2_monthly, cache=FALSE, fig.width=7.5, fig.height=3.5, fig.cap="Figure 4. Share of annual RVF-attributable excess pregnancy losses by month (bars) and the seasonal multiplier (line), simulation years 91 to 100."}
+monthly_dist <- out_m2 |>
+  filter(!is.na(daily_excess_loss)) |>
+  group_by(month_n) |>
+  summarise(monthly_excess = mean(daily_excess_loss) * 30.44, .groups = "drop") |>
+  mutate(month_abbr = factor(month.abb[month_n], levels = month.abb),
+         pct_of_annual = monthly_excess / sum(monthly_excess) * 100) |>
+  left_join(select(lambda_env_district, month_n, lambda_env), by = "month_n")
+
+sec_k <- max(monthly_dist$pct_of_annual) / max(monthly_dist$lambda_env)
+p_monthly <- ggplot(monthly_dist, aes(month_abbr)) +
+  geom_col(aes(y = pct_of_annual, fill = "Excess losses"), width = 0.7) +
+  geom_line(aes(y = lambda_env * sec_k, colour = "Seasonal multiplier", group = 1), linewidth = 0.7) +
+  geom_point(aes(y = lambda_env * sec_k, colour = "Seasonal multiplier"), size = 1.4) +
+  scale_fill_manual(values = c("Excess losses" = COL[["vermillion"]]), name = NULL) +
+  scale_colour_manual(values = c("Seasonal multiplier" = COL[["green"]]), name = NULL) +
+  scale_y_continuous(name = "Share of annual excess losses (%)", expand = expansion(mult = c(0, 0.05)),
+                     sec.axis = sec_axis(~ . / sec_k, name = expression("Seasonal multiplier ("*lambda[env]*")"))) +
+  labs(x = NULL) + theme_pub() + theme(legend.position = "top")
+p_monthly
+save_gg(p_monthly, "fig4_monthly_excess_losses.png", width = FIG_W_FULL, height = 3.5)
+
+monthly_dist |>
+  transmute(Month = month_abbr, `Mean losses per month` = round(monthly_excess, 1),
+            `Share of annual (%)` = round(pct_of_annual, 1), `Seasonal multiplier` = round(lambda_env, 2)) |>
+  knitr::kable(caption = "Monthly distribution of RVF-attributable excess losses") |> kbl_style()
+```
+
+**What Figure 4 and the table show (research question 2).** Losses follow the seasonal multiplier with a short delay from incubation and infection. **`r as.character(monthly_dist$month_abbr[which.max(monthly_dist$pct_of_annual)])`** has the largest share (`r sprintf("%.1f", max(monthly_dist$pct_of_annual))`% of the year's losses) and **`r as.character(monthly_dist$month_abbr[which.min(monthly_dist$pct_of_annual)])`** the smallest (`r sprintf("%.1f", min(monthly_dist$pct_of_annual))`%). March to May and October to December together account for `r sprintf("%.0f", sum(monthly_dist$pct_of_annual[monthly_dist$month_n %in% c(3:5, 10:12)]))`% of losses, so surveillance focused on these two rainy seasons would cover most RVF-linked pregnancy losses.
+
+# Model 3: detection of RVF-attributable pregnancy losses {#model3}
+
+> **Research question 3** (detection): chunks `m3_detection` and `m3_plot`.
+
+**Purpose.** Estimate how many of the excess losses the health system would detect (research question 3). A loss is detected only if four steps all happen: the woman presents to a facility (p_present), she is within a window when a test can detect infection (p_detectable), she is tested for RVF (p_tested) and the result is recorded together with the pregnancy (p_recorded). P(detect) is the product of the four.
+
+```{r m3_detection}
+params_m3 <- list(
+  pcr_window = c(0, 7),    # days after onset when PCR can detect infection (WHO)
+  igm_window = c(6, 60),   # days after onset when IgM is detectable (Paweska 2005; Haneche 2016; Pepin 2010)
+  delay_median = 7,        # median days from onset to presentation (assumption)
+  delay_sd     = 14        # SD of the delay (assumption)
+)
+meanlog <- log(params_m3$delay_median)
+sdlog   <- sqrt(log(1 + (params_m3$delay_sd / params_m3$delay_median)^2))
+p_pcr_det <- plnorm(params_m3$pcr_window[2], meanlog, sdlog)
+p_igm_det <- plnorm(params_m3$igm_window[2], meanlog, sdlog) - plnorm(params_m3$igm_window[1], meanlog, sdlog)
+
+scenarios <- tibble::tibble(
+  Scenario     = c("S0: Current practice", "S1: Pregnancy field on VHF form",
+                   "S2: IgM test at every miscarriage", "S3: Livestock and ANC linkage",
+                   "S4: VHT community surveillance"),
+  p_present    = c(0.55, 0.55, 0.75, 0.65, 0.80),
+  p_detectable = p_igm_det,
+  p_tested     = c(0.05, 0.05, 0.70, 0.15, 0.30),
+  p_recorded   = c(0.00, 1.00, 1.00, 1.00, 1.00)
+) |>
+  mutate(P_detect = p_present * p_detectable * p_tested * p_recorded,
+         `Detected per year` = P_detect * annual_excess,
+         `Missed per year`   = (1 - P_detect) * annual_excess)
+
+scenarios |>
+  transmute(Scenario, `P(present)` = p_present, `P(detectable)` = round(p_detectable, 3),
+            `P(tested)` = p_tested, `P(recorded)` = p_recorded,
+            `Detected (%)` = sprintf("%.1f", P_detect * 100),
+            `Detected per year` = round(`Detected per year`, 1), `Missed per year` = round(`Missed per year`, 1)) |>
+  knitr::kable(caption = sprintf("Surveillance scenarios (annual excess losses = %.0f)", annual_excess)) |> kbl_style()
+```
+
+**The scenarios.** S0 is current practice: pregnancy is not recorded on the viral haemorrhagic fever (VHF) notification form, so no loss can be linked to RVF. S1 adds a pregnancy field to the form. S2 tests every woman presenting with a miscarriage for RVF IgM. S3 links livestock RVF alerts to antenatal care. S4 adds Village Health Team (VHT) reporting of community miscarriages with referral for testing. The presentation, testing and recording probabilities are assumptions, so the scenarios should be compared with each other rather than read as exact predictions.
+
+```{r m3_plot, cache=FALSE, fig.width=7.5, fig.height=6, fig.cap="Figure 5. (A) Time from symptom onset to facility presentation against the PCR and IgM detection windows. (B) RVF-attributable excess losses detected and missed per year under each surveillance scenario."}
+det_df <- tibble::tibble(delay_day = 0:100, cdf = plnorm(0:100, meanlog, sdlog))
+p3a <- ggplot(det_df, aes(delay_day, cdf)) +
+  annotate("rect", xmin = params_m3$pcr_window[1], xmax = params_m3$pcr_window[2], ymin = 0, ymax = 1,
+           fill = COL[["vermillion"]], alpha = 0.15) +
+  annotate("rect", xmin = params_m3$igm_window[1], xmax = params_m3$igm_window[2], ymin = 0, ymax = 1,
+           fill = COL[["blue"]], alpha = 0.10) +
+  geom_line(linewidth = 0.7) +
+  annotate("text", x = mean(params_m3$pcr_window), y = 0.96, label = "PCR", size = 2.7,
+           fontface = "bold", colour = COL[["vermillion"]]) +
+  annotate("text", x = mean(params_m3$igm_window), y = 0.96, label = "IgM", size = 2.7,
+           fontface = "bold", colour = COL[["blue"]]) +
+  scale_x_continuous(breaks = seq(0, 100, 10), expand = c(0, 0)) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1), expand = expansion(mult = c(0, 0.02))) +
+  labs(x = "Days from symptom onset to presentation", y = "Cumulative proportion presenting") + theme_pub()
+
+scen_levels <- rev(scenarios$Scenario)
+p3b_data <- scenarios |>
+  transmute(Scenario = factor(Scenario, levels = scen_levels),
+            Detected = `Detected per year`, Missed = `Missed per year`) |>
+  pivot_longer(-Scenario, names_to = "Status", values_to = "Losses") |>
+  mutate(Status = factor(Status, levels = c("Missed", "Detected")))
+p3b <- ggplot(p3b_data, aes(Losses, Scenario, fill = Status)) +
+  geom_col(width = 0.65) +
+  geom_text(data = mutate(scenarios, Scenario = factor(Scenario, levels = scen_levels)),
+            aes(x = annual_excess, y = Scenario, label = sprintf("%.1f%% detected", P_detect * 100)),
+            inherit.aes = FALSE, hjust = -0.08, size = 2.6) +
+  scale_fill_manual(values = c("Missed" = "grey78", "Detected" = COL[["green"]]),
+                    breaks = c("Detected", "Missed"), name = NULL) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.35))) +
+  labs(x = "Excess losses per year", y = NULL) +
+  theme_pub() + theme(legend.position = "top", panel.grid.major.y = element_blank())
+
+p_m3 <- (patchwork::free(p3a) / p3b) + plot_layout(heights = c(1, 1.1)) + plot_annotation(tag_levels = "A")
+p_m3
+save_gg(p_m3, "fig5_detection_scenarios.png", width = FIG_W_FULL, height = 6)
+```
+
+**What Figure 5 shows.**
+
+- **A:** the curve is the share of women who have reached a facility by each day after symptom onset. `r sprintf("%.0f", p_pcr_det * 100)`% present within the PCR window and `r sprintf("%.0f", p_igm_det * 100)`% within the IgM window. Many women present too early for IgM or too late for PCR.
+- **B:** current practice detects `r sprintf("%.0f", scenarios$P_detect[1] * 100)`% of RVF-attributable losses, because pregnancy is not recorded. Adding a pregnancy field alone raises detection only to `r sprintf("%.1f", scenarios$P_detect[2] * 100)`%, since few women are tested. Testing every miscarriage for IgM (S2) gives the largest gain, `r sprintf("%.1f", scenarios$P_detect[3] * 100)`%, followed by VHT surveillance (S4, `r sprintf("%.1f", scenarios$P_detect[5] * 100)`%). Even in S2, about three quarters of losses are missed, mainly because of when women present.
+
+# Sensitivity analysis {#sensitivity}
+
+> **Research question 4** (uncertainty): chunks `morris_sa`, `morris_plot`, `sobol_sa` and `sobol_plot`.
+
+**Purpose.** Identify which uncertain inputs most affect the number of excess losses (research question 4). Morris screening first ranks 12 parameters cheaply; the five most influential are then analysed with Sobol variance decomposition. Each model evaluation runs Model 2 for one year from the initial conditions, varying the parameters within the ranges below.
+
+```{r morris_sa, cache.extra=digest::digest(list(params_m1, params_m2, state_m2))}
+morris_params <- data.frame(
+  name  = c("RR", "RR_igm", "lambda_mult", "mu_bgd_pct", "sigma_d", "gamma_d", "omega_d",
+            "pi_mult", "GFR_mult", "p_present", "p_tested", "igm_start"),
+  lower = c(2.42, 1.0, 0.5, 0.12, 2, 4, 41, 0.8, 0.8, 0.30, 0.01,  6),
+  upper = c(8.58, 3.5, 1.5, 0.15, 6, 7, 60, 1.2, 1.2, 0.75, 0.20, 20),
+  basis = c("95% CI from Baudin et al. counts", "Assumption", "Covers the λ estimates in Section 4.1",
+            "Assumption", "WHO (2 to 6 days)", "WHO (4 to 7 days)", "Shoemaker 2019; Haneche 2016",
+            "Plus or minus 20%", "Plus or minus 20%", "Assumption", "Assumption",
+            "Paweska 2005; Shoemaker 2019"),
+  stringsAsFactors = FALSE)
+
+# One-year run of Model 2 with a given parameter set; returns excess losses in that year
+run_model2_quick <- function(pset) {
+  p <- unlist(params_m2)
+  p["RR"]          <- pset["RR"]
+  p["RR_igm"]      <- pset["RR_igm"]
+  p["lambda_base"] <- params_m1$lambda_base * pset["lambda_mult"]
+  p["mu_bgd"]      <- pset["mu_bgd_pct"] / 270
+  p["mu_bgd_pp"]   <- pset["mu_bgd_pct"]
+  p["sigma"]       <- 1 / pset["sigma_d"]
+  p["gamma"]       <- 1 / pset["gamma_d"]
+  p["omega"]       <- 1 / pset["omega_d"]
+  p["Pi"]          <- params_m2$Pi * pset["pi_mult"] * pset["GFR_mult"]
+  if (p["mu_bgd_pp"] >= 0.99 / (p["RR"] - 1 + 1e-9)) return(NA_real_)  # excess probability must stay below 1
+  tryCatch({
+    out <- deSolve::ode(y = state_m2, times = seq(0, 365, by = 30), func = pregnancy_model_odes,
+                        parms = p, method = "lsoda") |> as.data.frame()
+    tail(out$L, 1)
+  }, error = function(e) NA_real_)
+}
+
+set.seed(2026)
+morris_out <- sensitivity::morris(model = NULL, factors = morris_params$name, r = 100,
+                                  design = list(type = "oat", levels = 6, grid.jump = 3),
+                                  binf = morris_params$lower, bsup = morris_params$upper, scale = TRUE)
+sensitivity::tell(morris_out, apply(morris_out$X, 1, run_model2_quick))
+
+morris_df <- data.frame(parameter = morris_params$name,
+                        mu_star   = apply(abs(morris_out$ee), 2, mean, na.rm = TRUE),
+                        sigma     = apply(morris_out$ee, 2, sd, na.rm = TRUE)) |>
+  arrange(desc(mu_star)) |>
+  mutate(parameter = factor(parameter, levels = rev(parameter)), rank = seq_len(n()))
+
+morris_df |>
+  left_join(morris_params, by = c("parameter" = "name")) |>
+  transmute(Rank = rank, Parameter = PARAM_LABELS[as.character(parameter)],
+            Range = sprintf("%s to %s", lower, upper), `Range basis` = basis,
+            `μ*` = round(mu_star, 2), `σ` = round(sigma, 2)) |>
+  knitr::kable(caption = "Morris screening: parameters ranked by mean absolute elementary effect (μ*)") |> kbl_style()
+```
+
+```{r morris_plot, cache=FALSE, fig.width=7.5, fig.height=4, fig.cap="Figure 6. Morris screening of 12 parameters: mean absolute elementary effect (μ*) on annual excess losses."}
+p_morris <- morris_df |>
+  mutate(label = factor(PARAM_LABELS[as.character(parameter)], levels = PARAM_LABELS[levels(parameter)])) |>
+  ggplot(aes(mu_star, label)) +
+  geom_col(fill = COL[["blue"]], width = 0.65) +
+  geom_text(aes(label = sprintf("%.1f", mu_star)), hjust = -0.2, size = 2.6) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(x = expression(mu*"* (excess losses per year)"), y = NULL) +
+  theme_pub() + theme(panel.grid.major.y = element_blank(),
+                      panel.grid.major.x = element_line(colour = "grey92", linewidth = 0.3))
+p_morris
+save_gg(p_morris, "fig6_morris_screening.png", width = FIG_W_FULL, height = 4)
+```
+
+**What Figure 6 and the Morris table show.** μ* is the average change in annual excess losses when a parameter is moved across its range; σ shows how much that effect depends on the other parameters. The **`r (PARAM_LABELS[as.character(morris_df$parameter[1])])`** (μ* = `r sprintf("%.1f", morris_df$mu_star[1])`) and the **`r (PARAM_LABELS[as.character(morris_df$parameter[2])])`** (μ* = `r sprintf("%.1f", morris_df$mu_star[2])`) matter far more than anything else. The three detection parameters have μ* = 0, as expected: detection does not change how many losses occur, which confirms the screening behaves correctly.
+
+```{r sobol_sa, cache.extra=digest::digest(list(params_m1, params_m2, state_m2, morris_df))}
+top_params <- as.character(head(arrange(morris_df, desc(mu_star)), 5)$parameter)
+sobol_meta <- filter(morris_params, name %in% top_params)
+n_sobol <- 500
+set.seed(2026)
+scale_lhs <- function(mat, meta)
+  as.data.frame(mapply(function(col, lo, hi) qunif(col, lo, hi), as.data.frame(mat),
+                       meta$lower, meta$upper, SIMPLIFY = FALSE))
+X1 <- scale_lhs(lhs::randomLHS(n_sobol, nrow(sobol_meta)), sobol_meta)
+X2 <- scale_lhs(lhs::randomLHS(n_sobol, nrow(sobol_meta)), sobol_meta)
+colnames(X1) <- colnames(X2) <- sobol_meta$name
+sobol_out <- sensitivity::sobol2002(model = NULL, X1 = X1, X2 = X2, nboot = 100)
+
+# Parameters not in the Sobol set are held at the middle of their Morris range
+morris_mid <- setNames((morris_params$lower + morris_params$upper) / 2, morris_params$name)
+y_sobol <- apply(sobol_out$X, 1, function(row) { full <- morris_mid; full[names(row)] <- row; run_model2_quick(full) })
+sobol_na_pct <- mean(is.na(y_sobol)) * 100
+y_sobol[is.na(y_sobol)] <- median(y_sobol, na.rm = TRUE)   # invalid parameter combinations
+sensitivity::tell(sobol_out, y_sobol)
+
+sobol_df <- data.frame(parameter = sobol_meta$name,
+                       Si = sobol_out$S$original, Si_lo = sobol_out$S$`min. c.i.`, Si_hi = sobol_out$S$`max. c.i.`,
+                       Ti = sobol_out$T$original, Ti_lo = sobol_out$T$`min. c.i.`, Ti_hi = sobol_out$T$`max. c.i.`) |>
+  arrange(desc(Ti)) |>
+  mutate(parameter = factor(parameter, levels = rev(parameter)))
+
+sobol_df |>
+  transmute(Parameter = PARAM_LABELS[as.character(parameter)],
+            `Si (95% CI)` = sprintf("%.2f (%.2f to %.2f)", Si, Si_lo, Si_hi),
+            `Ti (95% CI)` = sprintf("%.2f (%.2f to %.2f)", Ti, Ti_lo, Ti_hi)) |>
+  knitr::kable(caption = sprintf("Sobol indices for the five Morris-selected parameters (n = %d per matrix; %.1f%% of runs had invalid parameter combinations and were set to the median)",
+                                 n_sobol, sobol_na_pct)) |> kbl_style()
+```
+
+```{r sobol_plot, cache=FALSE, fig.width=7.5, fig.height=3.5, fig.cap="Figure 7. Sobol first-order (Si) and total-effect (Ti) indices for the five parameters selected by Morris screening (error bars: 95% bootstrap CI)."}
+sobol_plot_df <- sobol_df |>
+  pivot_longer(c(Si, Ti), names_to = "Index", values_to = "Value") |>
+  mutate(lo = if_else(Index == "Si", Si_lo, Ti_lo), hi = if_else(Index == "Si", Si_hi, Ti_hi),
+         Index = recode(Index, Si = "First order (Si)", Ti = "Total effect (Ti)"),
+         label = factor(PARAM_LABELS[as.character(parameter)], levels = PARAM_LABELS[levels(sobol_df$parameter)]))
+p_sobol <- ggplot(sobol_plot_df, aes(Value, label, fill = Index)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.65) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), position = position_dodge(width = 0.7),
+                width = 0.25, linewidth = 0.3, colour = "grey30", orientation = "y") +
+  geom_vline(xintercept = 0, linewidth = 0.3) +
+  scale_fill_manual(values = c("First order (Si)" = COL[["sky"]], "Total effect (Ti)" = COL[["blue"]]), name = NULL) +
+  scale_x_continuous(limits = c(-0.15, 1), breaks = seq(0, 1, 0.2)) +
+  labs(x = "Sensitivity index", y = NULL) +
+  theme_pub() + theme(legend.position = "top", panel.grid.major.y = element_blank(),
+                      panel.grid.major.x = element_line(colour = "grey92", linewidth = 0.3))
+p_sobol
+save_gg(p_sobol, "fig7_sobol_indices.png", width = FIG_W_FULL, height = 3.5)
+```
+
+**What Figure 7 and the Sobol table show.** Si is the share of the spread in annual excess losses explained by a parameter on its own; Ti adds its interactions with the others. The **`r (PARAM_LABELS[as.character(sobol_df$parameter[1])])`** (Ti = `r sprintf("%.2f", sobol_df$Ti[1])`) and the **`r (PARAM_LABELS[as.character(sobol_df$parameter[2])])`** (Ti = `r sprintf("%.2f", sobol_df$Ti[2])`) explain almost all of the uncertainty. Their Ti is larger than their Si because they multiply each other: the effect of the risk ratio is larger when transmission is higher. The other three parameters contribute little; their small negative estimates are sampling noise. The data that would most improve the estimate are therefore a cohort study of RVF infection in pregnancy (for the risk ratio) and an age-stratified serosurvey across Isingiro (for λ).
+
+# Summary of results
+
+```{r results_summary, echo=FALSE}
+tibble::tibble(
+  `Research question` = c("", "", "1. Burden", "1. Burden", "1. Burden", "2. Seasonality",
+                          "3. Detection", "3. Detection", "3. Detection", "4. Uncertainty"),
+  Output = c("Women of reproductive age", "Pregnant women at any time",
+             "RVF-attributable excess losses per year (central)",
+             "Range across the 95% CI of λ (approximate)",
+             "Share of all pregnancy losses",
+             "Share of losses in March to May and October to December",
+             "Detected under current practice (S0)", "Detected with VHT surveillance (S4)",
+             "Detected with IgM testing at every miscarriage (S2)",
+             "Main drivers of uncertainty (Sobol Ti)"),
+  Value = c(format(round(stage1$N_WRA), big.mark = ","), format(stage1$N_preg, big.mark = ","),
+            format(round(annual_excess)),
+            sprintf("%.0f to %.0f", annual_excess * lambda_yr_isingiro_ci[1] / lambda_yr,
+                    annual_excess * lambda_yr_isingiro_ci[2] / lambda_yr),
+            sprintf("%.2f%% (of %s)", annual_excess / annual_bgd * 100, format(round(annual_excess + annual_bgd), big.mark = ",")),
+            sprintf("%.0f%%", sum(monthly_dist$pct_of_annual[monthly_dist$month_n %in% c(3:5, 10:12)])),
+            sprintf("%.1f%%", scenarios$P_detect[1] * 100), sprintf("%.1f%%", scenarios$P_detect[5] * 100),
+            sprintf("%.1f%%", scenarios$P_detect[3] * 100),
+            sprintf("%s (%.2f); %s (%.2f)",
+                    PARAM_LABELS[as.character(sobol_df$parameter[1])], sobol_df$Ti[1],
+                    PARAM_LABELS[as.character(sobol_df$parameter[2])], sobol_df$Ti[2]))
+) |> knitr::kable(caption = "Main results by research question") |> kbl_style()
+```
+
+**Interpretation.** RVF causes an estimated `r round(annual_excess)` excess pregnancy losses a year in Isingiro: a small share of all pregnancy losses, concentrated in the two rainy seasons and currently invisible to surveillance. Testing women who miscarry for RVF IgM, especially during the rainy seasons, is the most effective single change, and recording pregnancy status on the VHF form is a necessary first step. The estimate is most sensitive to the miscarriage risk ratio, which comes from one small Sudanese hospital study, and to the force of infection, so it should be reported as a range.
+
+**Main limitations.** The seroprevalence data come from 383 Isingiro participants, and λ uses assumed age-group mid-points with constant transmission over time. The acute-phase risk ratio may overstate the risk for mild infections, and the IgM-phase risk ratio is an assumption. Presentation delays and detection probabilities are assumptions. The boundary files used contain 22 sub-counties, whereas the 2024 census lists 30. There are no observed data on RVF-linked pregnancy losses in Uganda to validate the model.
+
+## Data gaps
+
+```{r data_gaps, echo=FALSE}
+tibble::tibble(
+  `Data needed` = c("Miscarriage risk ratio for RVFV infection in pregnancy, Uganda",
+                    "Age-stratified seroprevalence across all Isingiro sub-counties",
+                    "Facility miscarriage counts (HMIS/DHIS2)",
+                    "Time from symptom onset to facility presentation",
+                    "Probability of RVF testing at miscarriage",
+                    "Miscarriage risk during the IgM phase"),
+  Improves = c("Model 2 (largest source of uncertainty)", "Model 1 force of infection (second largest)",
+               "Model 2 validation", "Model 3 detectability", "Model 3 testing step", "Model 2 delayed losses"),
+  `How to obtain` = c("Prospective cohort of pregnant women", "District serosurvey",
+                      "Isingiro District Health Office / DHIS2", "HMIS and ANC registers",
+                      "Ministry of Health VHF programme", "Cohort follow-up or expert elicitation")
+) |> knitr::kable(caption = "Priority data gaps") |> kbl_style()
+```
+
+# Export of tables to Word
+
+```{r save_word_tables, echo=FALSE}
+HEADER_BG <- "#1F4E79"; BAND_BG <- "#EEF3F9"; ASSUME_BG <- "#FFF4D6"; GOOD_BG <- "#E3F4EA"; BAD_BG <- "#FBE4E0"
+PAGE_W <- 9.6   # usable width of a landscape page (inches)
+
+make_ft <- function(df, footnotes, col_keys = names(df)) {
+  ft <- flextable(as.data.frame(df), col_keys = col_keys) |>
+    font(fontname = "Calibri", part = "all") |>
+    fontsize(size = 8.5, part = "all") |>
+    bold(part = "header") |>
+    color(color = "white", part = "header") |>
+    bg(bg = HEADER_BG, part = "header") |>
+    bg(i = seq(2, nrow(df), by = 2), bg = BAND_BG, part = "body") |>
+    border_remove() |>
+    hline_top(border = officer::fp_border(color = HEADER_BG, width = 1.2), part = "header") |>
+    hline_bottom(border = officer::fp_border(color = HEADER_BG, width = 1.2), part = "body") |>
+    valign(valign = "top", part = "body") |>
+    padding(padding.top = 2, padding.bottom = 2, padding.left = 3, padding.right = 3, part = "all") |>
+    autofit()
+  ft <- add_footer_lines(ft, values = footnotes) |>
+    fontsize(size = 7.5, part = "footer") |> italic(part = "footer") |> color(color = "grey30", part = "footer")
+  ft
+}
+title_par <- function(txt, size = 11)
+  officer::fpar(officer::ftext(txt, officer::fp_text(bold = TRUE, font.size = size, font.family = "Calibri",
+                                                     color = HEADER_BG)))
+add_table <- function(doc, title, ft)
+  doc |> body_add_fpar(title_par(title)) |> body_add_flextable(ft, align = "left") |>
+    body_add_par("", style = "Normal")
+
+doc <- read_docx() |>
+  body_set_default_section(prop_section(page_size = page_size(orient = "landscape"),
+                                        page_margins = page_mar(top = 0.6, bottom = 0.6, left = 0.7, right = 0.7))) |>
+  body_add_fpar(title_par("RVF Isingiro, Uganda: model tables (version 2.3)", size = 14)) |>
+  body_add_par(paste("Generated", format(Sys.time(), "%d %B %Y %H:%M"),
+                     "from RVF_Models_Isingiro_Uganda_v2.3_07Oct2026.Rmd"), style = "Normal")
+
+# Table 1: inputs (sources are clickable; assumptions shaded)
+t1 <- param_table
+ft1 <- make_ft(t1, col_keys = setdiff(names(t1), "Link"), footnotes = c(
+  "Click a source to open the original article or report.",
+  "Amber rows are assumptions or values estimated in this study; their influence is tested in the sensitivity analysis (Tables 8 and 9).",
+  "WRA: women of reproductive age (15 to 49 years). RR: risk ratio. NDVI: normalised difference vegetation index. VHT: Village Health Team."))
+ft1 <- compose(ft1, j = "Source", i = which(t1$Link != ""),
+               value = as_paragraph(hyperlink_text(x = Source, url = Link, props = officer::fp_text(color = "#0563C1", underlined = TRUE, font.size = 8.5, font.family = "Calibri"))))
+ft1 <- bg(ft1, i = which(grepl("ssumption|this study", t1$Source)), bg = ASSUME_BG, part = "body")
+ft1 <- width(ft1, j = c("Parameter", "Value", "How it was obtained", "Used in", "Why it is needed", "Source"),
+             width = c(1.4, 1.0, 2.9, 0.9, 1.8, 1.6))
+doc <- add_table(doc, "Table 1. Model inputs, how they were obtained, their role and their sources", ft1)
+
+doc <- add_table(doc, "Table 2. Phenology cluster of each sub-county", make_ft(
+  subcounty_lookup |> arrange(fda_cluster, subcounty) |> transmute(`Sub-county` = subcounty, Cluster = fda_cluster),
+  footnotes = "Clusters from k-means on functional principal component scores of each sub-county's monthly NDVI (Fourier basis, 5 functions; k = 3 chosen by silhouette width)."))
+
+t3 <- lambda_env_district |> transmute(Month = month_abbr, `Seasonal multiplier` = round(lambda_env, 3))
+ft3 <- make_ft(t3, footnotes = "λenv = 0.2 + 0.8 × normalised monthly NDVI for each cluster, averaged across clusters weighted by their number of sub-counties. 1.0 is the month of highest infection risk.")
+ft3 <- bg(ft3, i = which.max(t3$`Seasonal multiplier`), bg = BAD_BG, part = "body")
+doc <- add_table(doc, "Table 3. Seasonal multiplier of the force of infection by month", ft3)
+
+t4 <- tibble::tibble(Estimate = c("Isingiro level (used in the models)", "Three districts pooled",
+                                  "Single 25-year exposure period", "Bakamutumaho et al., modal value, SW Uganda"),
+                     `λ per year` = round(c(lambda_yr, lambda_yr_pooled, lambda_yr_25yr, lambda_yr_jid), 4),
+                     `95% CI` = c(sprintf("%.4f to %.4f", lambda_yr_isingiro_ci[1], lambda_yr_isingiro_ci[2]),
+                                  sprintf("%.4f to %.4f", lambda_yr_pooled_ci[1], lambda_yr_pooled_ci[2]), "", ""))
+ft4 <- make_ft(t4, footnotes = c("Catalytic model P(a) = 1 - exp(-λa) fitted by maximum likelihood to age-specific IgG seroprevalence (Nyakarahuka et al. 2026). The shaded row is used in all models.",
+                                 "CI: confidence interval (profile likelihood for the pooled fit; exact binomial CI of 53/383 for the Isingiro level)."))
+ft4 <- bg(ft4, i = 1, bg = GOOD_BG, part = "body") |> bold(i = 1, part = "body")
+doc <- add_table(doc, "Table 4. Force of infection estimates", ft4)
+
+doc <- add_table(doc, "Table 5. Model 1 state in simulation years 90, 95 and 100", make_ft(
+  out_m1_full |> filter(time %in% (c(90, 95, 100) * 365)) |>
+    transmute(Year = round(year), S = format(round(S), big.mark = ","), E = round(E, 1), I = round(I, 1),
+              `R1 (IgM+)` = round(R1, 1), `R2 (IgG+)` = format(round(R2), big.mark = ","),
+              Seroprevalence = sprintf("%.2f%%", seroprevalence * 100)),
+  footnotes = "S susceptible, E exposed, I infectious (viraemic), R1 IgM positive, R2 IgG positive (immune). Values on day 1 of each simulation year after a 90-year burn-in; near-identical rows show the model has reached a stable seasonal cycle."))
+
+t6 <- monthly_dist |> transmute(Month = month_abbr, `Mean losses per month` = round(monthly_excess, 1),
+                                `Share of annual (%)` = round(pct_of_annual, 1), `Seasonal multiplier` = round(lambda_env, 2))
+ft6 <- make_ft(t6, footnotes = c("Mean over simulation years 91 to 100. Shares sum to 100%.",
+                                 "Red: months of the two rainy seasons (March to May, October to December), which together account for most losses."))
+ft6 <- bg(ft6, i = which(monthly_dist$month_n %in% c(3:5, 10:12)), bg = BAD_BG, part = "body")
+doc <- add_table(doc, "Table 6. Monthly distribution of RVF-attributable excess pregnancy losses", ft6)
+
+t7 <- scenarios |> transmute(Scenario, `P(present)` = p_present, `P(detectable)` = round(p_detectable, 3),
+                             `P(tested)` = p_tested, `P(recorded)` = p_recorded,
+                             `Detected (%)` = round(P_detect * 100, 1),
+                             `Detected per year` = round(`Detected per year`, 1), `Missed per year` = round(`Missed per year`, 1))
+ft7 <- make_ft(t7, footnotes = c("P(detect) = P(present) × P(detectable) × P(tested) × P(recorded).",
+                                 "P(detectable): share of women presenting within the IgM window (days 6 to 60 after symptom onset). The other probabilities are assumptions, so scenarios should be compared with each other rather than read as exact predictions.",
+                                 "Red: current practice. Green: highest detection. VHF: viral haemorrhagic fever; ANC: antenatal care; VHT: Village Health Team."))
+ft7 <- bg(ft7, i = 1, bg = BAD_BG, part = "body") |> bg(i = which.max(scenarios$P_detect), bg = GOOD_BG, part = "body")
+doc <- add_table(doc, "Table 7. Detection of RVF-attributable pregnancy losses under five surveillance scenarios", ft7)
+
+t8 <- morris_df |> transmute(Rank = rank, Parameter = PARAM_LABELS[as.character(parameter)],
+                             `μ*` = round(mu_star, 2), `σ` = round(sigma, 2))
+ft8 <- make_ft(t8, footnotes = c("μ*: mean absolute change in annual excess losses when the parameter is moved across its range; σ: spread of these effects (interactions or non-linearity). 100 trajectories, 6 levels.",
+                                 "Green: the five parameters taken forward to the Sobol analysis. Detection parameters have μ* = 0 because detection does not change the number of losses."))
+ft8 <- bg(ft8, i = 1:5, bg = GOOD_BG, part = "body")
+doc <- add_table(doc, "Table 8. Morris screening of uncertain parameters", ft8)
+
+t9 <- sobol_df |> transmute(Parameter = PARAM_LABELS[as.character(parameter)],
+                            `Si (95% CI)` = sprintf("%.2f (%.2f to %.2f)", Si, Si_lo, Si_hi),
+                            `Ti (95% CI)` = sprintf("%.2f (%.2f to %.2f)", Ti, Ti_lo, Ti_hi))
+ft9 <- make_ft(t9, footnotes = c("Si: share of the variance in annual excess losses explained by the parameter alone; Ti: share including its interactions. 95% bootstrap CI (100 resamples); n = 500 per sample matrix.",
+                                 "Green: dominant drivers of uncertainty. Small negative estimates are sampling noise (true indices cannot be negative)."))
+ft9 <- bg(ft9, i = 1:2, bg = GOOD_BG, part = "body")
+doc <- add_table(doc, "Table 9. Sobol sensitivity indices", ft9)
+
+t10 <- tibble::tibble(
+  `Research question` = c("Population", "Population", "1. Burden", "1. Burden", "1. Burden", "2. Seasonality",
+                          "3. Detection", "3. Detection", "3. Detection", "4. Uncertainty"),
+  Output = c("Women of reproductive age", "Pregnant women at any time",
+             "RVF-attributable excess losses per year (central)", "Range across the 95% CI of λ (approximate)",
+             "Share of all pregnancy losses", "Share of losses in March to May and October to December",
+             "Detected under current practice (S0)", "Detected with VHT surveillance (S4)",
+             "Detected with IgM testing at every miscarriage (S2)", "Main drivers of uncertainty (Sobol Ti)"),
+  Value = c(format(round(stage1$N_WRA), big.mark = ","), format(stage1$N_preg, big.mark = ","),
+            format(round(annual_excess)),
+            sprintf("%.0f to %.0f", annual_excess * lambda_yr_isingiro_ci[1] / lambda_yr, annual_excess * lambda_yr_isingiro_ci[2] / lambda_yr),
+            sprintf("%.2f%%", annual_excess / annual_bgd * 100),
+            sprintf("%.0f%%", sum(monthly_dist$pct_of_annual[monthly_dist$month_n %in% c(3:5, 10:12)])),
+            sprintf("%.1f%%", scenarios$P_detect[1] * 100), sprintf("%.1f%%", scenarios$P_detect[5] * 100),
+            sprintf("%.1f%%", scenarios$P_detect[3] * 100),
+            sprintf("%s (%.2f); %s (%.2f)", PARAM_LABELS[as.character(sobol_df$parameter[1])], sobol_df$Ti[1],
+                    PARAM_LABELS[as.character(sobol_df$parameter[2])], sobol_df$Ti[2])))
+ft10 <- make_ft(t10, footnotes = "Central estimates from the model run; the range for excess losses scales the central value by the 95% CI of the force of infection. Green: the main burden estimate.")
+ft10 <- bg(ft10, i = 3, bg = GOOD_BG, part = "body") |> bold(i = 3, part = "body")
+doc <- add_table(doc, "Table 10. Main results by research question", ft10)
+
+word_path <- file.path(OUT_DIR, "RVF_Isingiro_Tables_v2.3_07Oct2026.docx")
+print(doc, target = word_path)
+cat("Tables saved to:", word_path, "\n")
+```
+
+# References
+
+Every reference below links to the original article or report (DOI or official page); open-access articles also have a free full-text link.
+
+- Baudin M, Jumaa AM, Jomma HJE, et al. (2016). [Association of Rift Valley fever virus infection with miscarriage in Sudanese women: a cross-sectional study](https://doi.org/10.1016/S2214-109X(16)30176-0). *Lancet Glob Health* 4(11):e864-71.
+- Bakamutumaho B, Juma J, Clancey E, et al. [Hyperendemicity of Rift Valley fever in southwestern Uganda associated with the rapidly evolving lineage C viruses](https://doi.org/10.1093/infdis/jiaf417). *J Infect Dis*. [Free full text](https://pmc.ncbi.nlm.nih.gov/articles/PMC12811889/).
+- Campolongo F, Cariboni J, Saltelli A (2007). [An effective screening design for sensitivity analysis of large models](https://doi.org/10.1016/j.envsoft.2006.10.004). *Environ Model Softw* 22(10):1509-18.
+- Gwon Y-D, Nematollahi Mahani SA, Nagaev I, et al. (2021). [Rift Valley fever virus propagates in human villous trophoblast cell lines and induces cytokine mRNA responses known to provoke miscarriage](https://doi.org/10.3390/v13112265). *Viruses* 13(11):2265. [Free full text](https://pmc.ncbi.nlm.nih.gov/articles/PMC8625252/).
+- Haneche F, Leparc-Goffart I, Simon F, et al. (2016). [Rift Valley fever in kidney transplant recipient returning from Mali with viral RNA detected in semen up to four months from symptom onset](https://doi.org/10.2807/1560-7917.ES.2016.21.18.30222). *Euro Surveill* 21(18):30222.
+- Isingiro District Local Government (2015). [Five Year District Local Government Development Plan II, 2015/16 to 2019/20](https://npa.go.ug/wp-content/uploads/2023/03/ISINGIRO-District-5-Year-LGDP-Final.pdf).
+- Keiding N (1991). [Age-specific incidence and prevalence: a statistical perspective](https://doi.org/10.2307/2983150). *J R Stat Soc A* 154(3):371-412.
+- Muench H (1934). [Derivation of rates from summation data by the catalytic curve](https://doi.org/10.1080/01621459.1934.10502685). *J Am Stat Assoc* 29(185):25-38.
+- Nicholson SE, Davenport ML, Malo AR (1990). [A comparison of the vegetation response to rainfall in the Sahel and East Africa, using NDVI from NOAA AVHRR](https://doi.org/10.1007/BF00138369). *Climatic Change* 17:209-41.
+- Nyakarahuka L, Situma S, Odinoh R, Bakamutumaho B, et al. (2026). [A cross-sectional study of Rift Valley fever exposure in humans and livestock in southwestern Uganda using a One Health approach](https://doi.org/10.3390/pathogens15020224). *Pathogens* 15(2):224. [Free full text](https://pmc.ncbi.nlm.nih.gov/articles/PMC12943168/).
+- Paweska JT, Burt FJ, Swanepoel R (2005). [Validation of IgG-sandwich and IgM-capture ELISA for the detection of antibody to Rift Valley fever virus in humans](https://doi.org/10.1016/j.jviromet.2004.11.020). *J Virol Methods* 124(1-2):173-81.
+- Pepin M, Bouloy M, Bird BH, Kemp A, Paweska J (2010). [Rift Valley fever virus: an update on pathogenesis, molecular epidemiology, vectors, diagnostics and prevention](https://doi.org/10.1051/vetres/2010033). *Vet Res* 41(6):61. [Free full text](https://pmc.ncbi.nlm.nih.gov/articles/PMC2896810/).
+- Quenby S, Gallos ID, Dhillon-Smith RK, et al. (2021). [Miscarriage matters: the epidemiological, physical, psychological, and economic costs of early pregnancy loss](https://doi.org/10.1016/S0140-6736(21)00682-6). *Lancet* 397(10285):1658-67.
+- Ramsay JO, Silverman BW (2005). [*Functional Data Analysis*, 2nd ed.](https://doi.org/10.1007/b98888) Springer.
+- Sabin AB, Blumberg RW (1947). [Human infection with Rift Valley fever virus and immunity twelve years after single attack](https://pubmed.ncbi.nlm.nih.gov/20239431/). *Proc Soc Exp Biol Med* 64(4):385-9.
+- Saltelli A (2002). [Making best use of model evaluations to compute sensitivity indices](https://doi.org/10.1016/S0010-4655(02)00280-1). *Comput Phys Commun* 145(2):280-97.
+- Shoemaker TR, Nyakarahuka L, Balinandi S, et al. (2019). [First laboratory-confirmed outbreak of human and animal Rift Valley fever virus in Uganda in 48 years](https://doi.org/10.4269/ajtmh.18-0732). *Am J Trop Med Hyg* 100(3):659-71. [Free full text](https://pmc.ncbi.nlm.nih.gov/articles/PMC6402942/).
+- Uganda Bureau of Statistics (2024). [National Population and Housing Census 2024, Final Report Volume I (Main)](https://www.ubos.org/wp-content/uploads/2024/12/National-Population-and-Housing-Census-2024-Final-Report-Volume-1-Main.pdf). Kampala: UBOS.
+- Uganda Bureau of Statistics and ICF (2023). [Uganda Demographic and Health Survey 2022](https://www.ubos.org/wp-content/uploads/publications/UDHS-2022-Report.pdf). Kampala: UBOS.
+- Wang Z, Pei S, Ye R, et al. (2024). [Increasing evolution, prevalence, and outbreaks for Rift Valley fever virus in the process of breaking geographical barriers](https://doi.org/10.1016/j.scitotenv.2024.170302). *Sci Total Environ* 917:170302.
+- World Health Organization. [Rift Valley fever fact sheet](https://www.who.int/news-room/fact-sheets/detail/rift-valley-fever).
+- NASA LP DAAC. [MODIS/Terra Vegetation Indices 16-Day L3 Global 250m (MOD13Q1.061)](https://doi.org/10.5067/MODIS/MOD13Q1.061).
+
+# Session information
+
+```{r session_info, echo=FALSE, cache=FALSE}
+cat(sprintf("R version: %s\nRun on: %s\nOutputs: %s\n", R.version$version.string,
+            format(Sys.time(), "%d %B %Y %H:%M"), OUT_DIR))
+for (p in c("deSolve", "sensitivity", "fda", "tidyverse", "patchwork"))
+  cat(sprintf("  %-12s %s\n", p, as.character(packageVersion(p))))
+```

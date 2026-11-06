@@ -1,0 +1,186 @@
+{
+ "tier": 1,
+ "error": null,
+ "params": {
+  "dates": [
+   {
+    "endDate": "03-31-2026",
+    "startDate": "01-01-1995"
+   }
+  ],
+  "layers": [
+   {
+    "layer": "_250m_16_days_NDVI",
+    "product": "MOD13Q1.061"
+   },
+   {
+    "layer": "_250m_16_days_EVI",
+    "product": "MOD13Q1.061"
+   },
+   {
+    "layer": "_250m_16_days_pixel_reliability",
+    "product": "MOD13Q1.061"
+   }
+  ],
+  "output": {
+   "format": {
+    "type": "csv"
+   },
+   "projection": "geographic"
+  },
+  "coordinates": [
+   {
+    "id": "ISI_001",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -1.0212,
+    "longitude": 30.5154
+   },
+   {
+    "id": "ISI_002",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -1.0212,
+    "longitude": 30.6154
+   },
+   {
+    "id": "ISI_003",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 30.6154
+   },
+   {
+    "id": "ISI_004",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 30.7154
+   },
+   {
+    "id": "ISI_005",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 30.8154
+   },
+   {
+    "id": "ISI_006",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 30.9154
+   },
+   {
+    "id": "ISI_007",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 31.0154
+   },
+   {
+    "id": "ISI_008",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 31.1154
+   },
+   {
+    "id": "ISI_009",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.9212,
+    "longitude": 31.2154
+   },
+   {
+    "id": "ISI_010",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.8212,
+    "longitude": 30.6154
+   },
+   {
+    "id": "ISI_011",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.8212,
+    "longitude": 30.7154
+   },
+   {
+    "id": "ISI_012",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.8212,
+    "longitude": 30.8154
+   },
+   {
+    "id": "ISI_013",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.8212,
+    "longitude": 30.9154
+   },
+   {
+    "id": "ISI_014",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.8212,
+    "longitude": 31.0154
+   },
+   {
+    "id": "ISI_015",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.8212,
+    "longitude": 31.1154
+   },
+   {
+    "id": "ISI_016",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.7212,
+    "longitude": 30.7154
+   },
+   {
+    "id": "ISI_017",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.7212,
+    "longitude": 30.8154
+   },
+   {
+    "id": "ISI_018",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.7212,
+    "longitude": 30.9154
+   },
+   {
+    "id": "ISI_019",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.7212,
+    "longitude": 31.0154
+   },
+   {
+    "id": "ISI_020",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.7212,
+    "longitude": 31.1154
+   },
+   {
+    "id": "ISI_021",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.6212,
+    "longitude": 30.7154
+   },
+   {
+    "id": "ISI_022",
+    "category": "Isingiro_District_Uganda",
+    "latitude": -0.6212,
+    "longitude": 30.8154
+   }
+  ]
+ },
+ "status": "processing",
+ "created": "2026-05-12T11:38:43.286801",
+ "task_id": "6e07eb82-753e-4f27-969f-dae0d08f9941",
+ "updated": "2026-05-12T11:39:47.472355",
+ "user_id": "<redacted>",
+ "estimate": {
+  "request_size": 39336,
+  "request_tier": 0,
+  "request_memory": 1
+ },
+ "retry_at": null,
+ "has_swath": false,
+ "task_name": "Isingiro_RVF_NDVI_FullGrid_v2",
+ "task_type": "point",
+ "api_version": "v1",
+ "svc_version": "3.117",
+ "web_version": null,
+ "has_nsidc_daac": false,
+ "expires_on": "2026-06-11T11:39:47.472355",
+ "attempts": 1
+}
